@@ -1,0 +1,82 @@
+{
+  "tags": [
+    {
+      "name": "Tank1/Level",
+      "tagType": "AtomicTag",
+      "dataType": "Float8",
+      "value": 75.5,
+      "path": "Tanks/Tank1/Level",
+      "parameters": {
+        "engHigh": 100,
+        "engLow": 0,
+        "engUnit": "%",
+        "description": "Current fill level of Tank 1"
+      },
+      "alarms": [
+        {
+          "name": "High",
+          "mode": "HighHigh",
+          "setpoint": 90,
+          "priority": "High",
+          "enabled": true
+        },
+        {
+          "name": "Low",
+          "mode": "LowLow",
+          "setpoint": 10,
+          "priority": "Medium",
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "name": "Tank1/Temperature",
+      "tagType": "AtomicTag",
+      "dataType": "Float8",
+      "value": 22.3,
+      "path": "Tanks/Tank1/Temperature",
+      "parameters": {
+        "engHigh": 100,
+        "engLow": -20,
+        "engUnit": "°C",
+        "description": "Current temperature of contents in Tank 1"
+      }
+    },
+    {
+      "name": "Tank1/Pressure",
+      "tagType": "AtomicTag",
+      "dataType": "Float8",
+      "value": 1.02,
+      "path": "Tanks/Tank1/Pressure",
+      "parameters": {
+        "engHigh": 5,
+        "engLow": 0,
+        "engUnit": "bar",
+        "description": "Current pressure in Tank 1"
+      }
+    },
+    {
+      "name": "Pump1/Status",
+      "tagType": "AtomicTag",
+      "dataType": "Boolean",
+      "value": true,
+      "path": "Pumps/Pump1/Status",
+      "parameters": {
+        "description": "Operational status of Pump 1 (true = running)"
+      }
+    },
+    {
+      "name": "Pump1/Speed",
+      "tagType": "AtomicTag",
+      "dataType": "Int4",
+      "value": 1200,
+      "path": "Pumps/Pump1/Speed",
+      "parameters": {
+        "engHigh": 3000,
+        "engLow": 0,
+        "engUnit": "RPM",
+        "description": "Current speed of Pump 1"
+      }
+    }
+  ]
+}

@@ -1,0 +1,101 @@
+{
+  "root": {
+    "type": "view",
+    "name": "TankMonitor",
+    "children": [
+      {
+        "type": "container",
+        "name": "MainContainer",
+        "props": {
+          "style": {
+            "width": "100%",
+            "height": "100%",
+            "display": "flex",
+            "flexDirection": "column"
+          }
+        },
+        "children": [
+          {
+            "type": "label",
+            "name": "TitleLabel",
+            "props": {
+              "text": "Tank Monitoring System",
+              "style": {
+                "fontSize": "24px",
+                "fontWeight": "bold",
+                "margin": "10px"
+              }
+            }
+          },
+          {
+            "type": "container",
+            "name": "TankDisplayContainer",
+            "props": {
+              "style": {
+                "display": "flex",
+                "flexDirection": "row",
+                "justifyContent": "space-around",
+                "margin": "20px"
+              }
+            },
+            "children": [
+              {
+                "type": "gauge",
+                "name": "TankLevelGauge",
+                "props": {
+                  "min": 0,
+                  "max": 100,
+                  "value": {
+                    "binding": {
+                      "type": "tag",
+                      "path": "Tanks/Tank1/Level"
+                    }
+                  },
+                  "style": {
+                    "width": "200px",
+                    "height": "200px"
+                  }
+                }
+              },
+              {
+                "type": "numericField",
+                "name": "TankLevelValue",
+                "props": {
+                  "value": {
+                    "binding": {
+                      "type": "tag",
+                      "path": "Tanks/Tank1/Level"
+                    }
+                  },
+                  "readOnly": true,
+                  "style": {
+                    "fontSize": "18px",
+                    "margin": "10px"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "type": "button",
+            "name": "RefreshButton",
+            "props": {
+              "text": "Refresh",
+              "onClick": {
+                "script": "self.getSibling('TankLevelGauge').props.value.refreshBinding(); self.getSibling('TankLevelValue').props.value.refreshBinding();"
+              },
+              "style": {
+                "margin": "10px",
+                "padding": "5px 10px"
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "params": {
+      "title": "Tank Monitor View",
+      "description": "Displays the current level of Tank 1"
+    }
+  }
+}

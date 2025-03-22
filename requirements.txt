@@ -1,0 +1,22 @@
+# Core dependencies
+openai==1.6.1
+chromadb==0.4.22
+fastapi==0.109.0
+uvicorn==0.25.0
+python-dotenv==1.0.0
+tiktoken==0.5.2
+pydantic==2.5.3
+watchdog==3.0.0
+typer==0.9.0
+requests==2.31.0
+
+# Testing and development
+pytest==7.4.3
+pytest-cov==4.1.0
+black==23.11.0
+flake8==6.1.0
+isort==5.12.0
+httpx==0.25.2
+
+# Performance monitoring
+prometheus-client==0.18.0 

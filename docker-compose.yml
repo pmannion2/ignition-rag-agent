@@ -1,0 +1,73 @@
+version: "3.8"
+
+services:
+  # Chroma Vector Database
+  chroma:
+    image: chromadb/chroma:latest
+    volumes:
+      - chroma_data:/chroma/chroma
+    environment:
+      - ALLOW_RESET=true
+      - ANONYMIZED_TELEMETRY=false
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    ports:
+      - "8001:8000" # Map to different port to avoid conflict with API
+
+  # API Service
+  api:
+    build: .
+    volumes:
+      - ./:/app # Mount code for development
+      - chroma_index:/app/chroma_index # Vector DB persistence
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - CHROMA_HOST=chroma
+      - CHROMA_PORT=8000
+    ports:
+      - "8000:8000"
+    depends_on:
+      chroma:
+        condition: service_healthy
+    command: uvicorn api:app --host 0.0.0.0 --port 8000 --reload
+
+  # Indexer (as needed)
+  indexer:
+    build: .
+    profiles: ["indexer"] # Only run when explicitly specified
+    volumes:
+      - ./:/app # Mount code for development
+      - chroma_index:/app/chroma_index # Vector DB persistence
+      - ${IGNITION_PROJECT_PATH:-./sample_project}:/ignition_project # Mount the Ignition project
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - CHROMA_HOST=chroma
+      - CHROMA_PORT=8000
+    depends_on:
+      chroma:
+        condition: service_healthy
+    command: python indexer.py --path /ignition_project
+
+  # Watcher (for development)
+  watcher:
+    build: .
+    profiles: ["watcher"] # Only run when explicitly specified
+    volumes:
+      - ./:/app # Mount code for development
+      - chroma_index:/app/chroma_index # Vector DB persistence
+      - ${IGNITION_PROJECT_PATH:-./sample_project}:/ignition_project # Mount the Ignition project
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - CHROMA_HOST=chroma
+      - CHROMA_PORT=8000
+    depends_on:
+      chroma:
+        condition: service_healthy
+    command: python watcher.py /ignition_project
+
+volumes:
+  chroma_data: # Persistent volume for Chroma DB
+  chroma_index: # Persistent volume for our index
