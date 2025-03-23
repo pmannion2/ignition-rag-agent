@@ -32,6 +32,22 @@ else
   USE_UV=true
 fi
 
+# Check for and kill any processes using port 8001
+if lsof -Pi :$API_PORT -sTCP:LISTEN -t >/dev/null ; then
+  echo -e "${YELLOW}Port $API_PORT is already in use. Attempting to kill the process...${NC}"
+  lsof -Pi :$API_PORT -sTCP:LISTEN -t | xargs kill -9
+  sleep 1
+fi
+
+# Stop and remove existing Chroma containers to avoid conflicts
+echo -e "${YELLOW}Cleaning up any existing Chroma containers...${NC}"
+docker-compose -f $DOCKER_COMPOSE_FILE down
+docker rm -f $(docker ps -a -q --filter "name=chroma") 2>/dev/null || true
+
+# Create the index directory if it doesn't exist
+mkdir -p ./chroma_index
+chmod -R 777 ./chroma_index
+
 # Start Chroma DB with Docker
 echo -e "${YELLOW}Starting Chroma database...${NC}"
 docker-compose -f $DOCKER_COMPOSE_FILE up -d chroma
@@ -40,7 +56,7 @@ docker-compose -f $DOCKER_COMPOSE_FILE up -d chroma
 echo -e "${YELLOW}Waiting for Chroma to be ready...${NC}"
 attempt=0
 max_attempts=30
-until docker-compose -f $DOCKER_COMPOSE_FILE exec chroma curl -s http://localhost:8000/api/v1/heartbeat > /dev/null; do
+until docker-compose -f $DOCKER_COMPOSE_FILE exec -T chroma curl -s http://localhost:8000/api/v1/heartbeat > /dev/null; do
   attempt=$((attempt+1))
   if [ $attempt -gt $max_attempts ]; then
     echo -e "${RED}Error: Chroma failed to start properly.${NC}"
@@ -51,12 +67,23 @@ until docker-compose -f $DOCKER_COMPOSE_FILE exec chroma curl -s http://localhos
   echo -n "."
   sleep 1
 done
-echo -e "\n${GREEN}Chroma is ready!${NC}"
+
+# Wait a bit longer for tenant creation
+echo -e "${YELLOW}Waiting for tenant initialization (5 seconds)...${NC}"
+sleep 5
+
+echo -e "${GREEN}Chroma is ready!${NC}"
+
+# Create default tenant
+echo -e "${YELLOW}Creating default tenant...${NC}"
+curl -s -X POST http://localhost:8000/api/v1/tenants -H "Content-Type: application/json" -d '{"name":"default_tenant"}' > /dev/null
+echo -e "${GREEN}Default tenant created or already exists${NC}"
 
 # Set environment variables for the API
 export MOCK_EMBEDDINGS=$USE_MOCK
 export CHROMA_HOST=localhost
 export CHROMA_PORT=8000
+export USE_PERSISTENT_CHROMA=true
 
 # Start the API service
 echo -e "${YELLOW}Starting API service on port $API_PORT...${NC}"

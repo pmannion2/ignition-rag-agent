@@ -118,11 +118,29 @@ def get_chroma_client():
         # Check if external Chroma server is specified
         if CHROMA_HOST:
             logger.info(f"Connecting to external Chroma at {CHROMA_HOST}:{CHROMA_PORT}")
-            client = chromadb.HttpClient(
-                host=CHROMA_HOST,
-                port=int(CHROMA_PORT) if CHROMA_PORT else 8000,
-                settings=Settings(anonymized_telemetry=False),
-            )
+
+            # Use different client init based on whether we're using persistent mode
+            if USE_PERSISTENT_CHROMA:
+                logger.info("Using persistent HTTP client mode")
+                client = chromadb.HttpClient(
+                    host=CHROMA_HOST,
+                    port=int(CHROMA_PORT) if CHROMA_PORT else 8000,
+                    tenant="default_tenant",
+                    settings=Settings(
+                        anonymized_telemetry=False,
+                        allow_reset=True,
+                    ),
+                )
+            else:
+                # Standard HTTP client
+                client = chromadb.HttpClient(
+                    host=CHROMA_HOST,
+                    port=int(CHROMA_PORT) if CHROMA_PORT else 8000,
+                    tenant="default_tenant",
+                    settings=Settings(
+                        anonymized_telemetry=False,
+                    ),
+                )
         else:
             # Use local persistent Chroma
             logger.info(f"Using local Chroma with persistence at {PERSIST_DIRECTORY}")
@@ -131,7 +149,8 @@ def get_chroma_client():
             )
 
         # Test connection works
-        client.heartbeat()
+        heartbeat = client.heartbeat()
+        logger.info(f"Chroma connection successful. Heartbeat: {heartbeat}")
         return client
     except Exception as e:
         logger.error(f"Failed to connect to Chroma: {e}")
@@ -203,7 +222,11 @@ async def verify_dependencies():
 
     # Check Chroma connection
     try:
-        count = collection.count()
+        collection = get_collection()
+        if collection:
+            count = collection.count()
+        else:
+            errors.append("Could not connect to Chroma collection")
     except Exception as e:
         errors.append(f"Chroma connection error: {str(e)}")
 
@@ -235,9 +258,12 @@ async def root():
 @app.get("/health")
 async def health_check(deps: None = Depends(verify_dependencies)):
     """Health check endpoint that verifies all dependencies are working."""
+    collection = get_collection()
+    doc_count = collection.count() if collection else 0
+
     return {
         "status": "healthy",
-        "chroma": {"connected": True, "documents": collection.count()},
+        "chroma": {"connected": collection is not None, "documents": doc_count},
         "openai": {"configured": bool(openai_api_key) or MOCK_EMBEDDINGS},
         "mock_mode": MOCK_EMBEDDINGS,
     }
@@ -379,6 +405,14 @@ async def agent_query(
         logger.info(f"Mock mode overridden to: {use_mock}")
 
     try:
+        # Get the collection
+        collection = get_collection()
+        if collection is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Vector database is not available. Please check Chroma connection.",
+            )
+
         # Extract any filter from context
         where_filter = {}
         if req.filter_type:
@@ -512,6 +546,14 @@ async def get_stats():
     logger.info("Stats request received")
 
     try:
+        # Get the collection
+        collection = get_collection()
+        if collection is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Vector database is not available. Please check Chroma connection.",
+            )
+
         # Get count of documents in the collection
         try:
             count = collection.count()

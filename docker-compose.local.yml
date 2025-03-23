@@ -1,21 +1,21 @@
-version: "3.8"
-
 services:
   # Chroma Vector Database
   chroma:
     image: chromadb/chroma:latest
     volumes:
-      - ./chroma_index:/chroma/chroma
+      - ./chroma_index:/chroma/chroma/data
     environment:
-      - ALLOW_RESET=true
-      - ANONYMIZED_TELEMETRY=false
+      - ALLOW_RESET=True
+      - ANONYMIZED_TELEMETRY=False
+      - CHROMA_SERVER_HOST=0.0.0.0
+      - CHROMA_SERVER_HTTP_PORT=8000
+    ports:
+      - "8000:8000"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
-      interval: 10s
+      interval: 1s
       timeout: 5s
-      retries: 5
-    ports:
-      - "8000:8000" # Map to default port so host apps can connect
+      retries: 10
     networks:
       - ignition-network
 

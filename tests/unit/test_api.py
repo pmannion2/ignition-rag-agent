@@ -14,7 +14,7 @@ sys.path.append(
 
 # Import after path setup
 import api
-from api import app, collection, mock_embedding
+from api import app, get_collection, mock_embedding
 
 
 class TestAPI(unittest.TestCase):
@@ -78,12 +78,16 @@ class TestAPI(unittest.TestCase):
             "distances": [[0.1, 0.2]],
         }
 
-    @patch("api.collection")
+    @patch("api.get_collection")
     @patch("api.mock_embedding", return_value=[0.1] * 1536)
-    def test_query_endpoint(self, mock_embedding_fn, mock_collection):
+    def test_query_endpoint(self, mock_embedding_fn, mock_get_collection):
         """Test the /query endpoint."""
-        # Mock the collection.query response
+        # Create mock collection
+        mock_collection = MagicMock()
         mock_collection.query.return_value = self.mock_query_response
+        mock_collection.count.return_value = 2
+        # Setup the get_collection function to return our mock
+        mock_get_collection.return_value = mock_collection
 
         # Test the endpoint
         response = self.client.post(
@@ -96,7 +100,8 @@ class TestAPI(unittest.TestCase):
 
         self.assertIn("results", data)
         self.assertEqual(len(data["results"]), 2)
-        self.assertEqual(data["total"], 2)
+        self.assertIn("metadata", data)
+        self.assertEqual(data["metadata"]["total_chunks"], 2)
 
         # Check that results have the expected structure
         result = data["results"][0]
@@ -107,12 +112,16 @@ class TestAPI(unittest.TestCase):
         # Verify collection.query was called with the embedding
         mock_collection.query.assert_called_once()
 
-    @patch("api.collection")
+    @patch("api.get_collection")
     @patch("api.mock_embedding", return_value=[0.1] * 1536)
-    def test_query_with_filter(self, mock_embedding_fn, mock_collection):
+    def test_query_with_filter(self, mock_embedding_fn, mock_get_collection):
         """Test the /query endpoint with filters."""
-        # Mock the collection.query response
+        # Create mock collection
+        mock_collection = MagicMock()
         mock_collection.query.return_value = self.mock_query_response
+        mock_collection.count.return_value = 2
+        # Setup the get_collection function to return our mock
+        mock_get_collection.return_value = mock_collection
 
         # Test the endpoint with type filter
         response = self.client.post(
@@ -120,8 +129,7 @@ class TestAPI(unittest.TestCase):
             json={
                 "query": "Tank Level",
                 "top_k": 2,
-                "filter_type": "tag",
-                "filter_path": "tags",
+                "filter_metadata": {"type": "tag", "filepath": {"$contains": "tags"}},
                 "use_mock": True,
             },
         )
@@ -136,12 +144,15 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(kwargs["where"]["type"], "tag")
         self.assertEqual(kwargs["where"]["filepath"]["$contains"], "tags")
 
-    @patch("api.collection")
+    @patch("api.get_collection")
     @patch("api.mock_embedding", return_value=[0.1] * 1536)
-    def test_agent_query_endpoint(self, mock_embedding_fn, mock_collection):
+    def test_agent_query_endpoint(self, mock_embedding_fn, mock_get_collection):
         """Test the /agent/query endpoint."""
-        # Mock the collection.query response
+        # Create mock collection
+        mock_collection = MagicMock()
         mock_collection.query.return_value = self.mock_query_response
+        # Setup the get_collection function to return our mock
+        mock_get_collection.return_value = mock_collection
 
         # Test the endpoint
         response = self.client.post(
@@ -181,13 +192,12 @@ class TestAPI(unittest.TestCase):
         self.assertIn("version", data)
         self.assertIn("endpoints", data)
 
-    @patch("api.collection")
-    def test_stats_endpoint(self, mock_collection):
+    @patch("api.get_collection")
+    def test_stats_endpoint(self, mock_get_collection):
         """Test the /stats endpoint."""
-        # Mock the collection.count response
+        # Create mock collection
+        mock_collection = MagicMock()
         mock_collection.count.return_value = 42
-
-        # Mock the collection.get response
         mock_collection.get.return_value = {
             "metadatas": [
                 {"type": "perspective"},
@@ -195,6 +205,8 @@ class TestAPI(unittest.TestCase):
                 {"type": "tag"},
             ]
         }
+        # Setup the get_collection function to return our mock
+        mock_get_collection.return_value = mock_collection
 
         # Test the endpoint
         response = self.client.get("/stats")
