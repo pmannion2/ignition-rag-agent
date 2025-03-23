@@ -9,7 +9,7 @@ RED='\033[0;31m'
 NC='\033[0m' # No Color
 
 # Set default variables
-USE_MOCK=true
+USE_MOCK=false
 API_PORT=8001
 DOCKER_COMPOSE_FILE="docker-compose.local.yml"
 
