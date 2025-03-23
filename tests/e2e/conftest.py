@@ -13,7 +13,7 @@ logger = logging.getLogger("e2e-tests")
 
 # Constants
 API_HOST = os.environ.get("API_HOST", "localhost")
-API_PORT = os.environ.get("API_PORT", "8000")
+API_PORT = os.environ.get("API_PORT", "8001")
 API_URL = f"http://{API_HOST}:{API_PORT}"
 MAX_RETRIES = 30
 RETRY_INTERVAL = 5

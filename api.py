@@ -115,6 +115,11 @@ async def global_exception_handler(request: Request, exc: Exception):
 def get_chroma_client():
     """Initialize and return a Chroma client."""
     try:
+        # For tests, use in-memory client if specified
+        if os.getenv("USE_IN_MEMORY_CHROMA", "false").lower() == "true":
+            logger.info("Using in-memory Chroma client for testing")
+            return chromadb.Client(Settings(anonymized_telemetry=False))
+
         # Check if external Chroma server is specified
         if CHROMA_HOST:
             logger.info(f"Connecting to external Chroma at {CHROMA_HOST}:{CHROMA_PORT}")
@@ -192,8 +197,8 @@ class QueryRequest(BaseModel):
 
     query: str = Field(..., description="Query text to search for")
     top_k: int = Field(3, description="Number of results to return")
-    filter_metadata: Dict[str, Any] = Field(
-        default=None, description="Optional metadata filters for the query"
+    filter_metadata: Optional[Dict[str, Any]] = Field(
+        default={}, description="Optional metadata filters for the query"
     )
 
 

@@ -59,12 +59,35 @@ app = typer.Typer()
 
 def setup_chroma_client():
     """Set up and return a Chroma client with persistence."""
-    if CHROMA_HOST and CHROMA_PORT and not USE_PERSISTENT_CHROMA:
+    # For tests, use in-memory client if specified
+    if os.getenv("USE_IN_MEMORY_CHROMA", "false").lower() == "true":
+        print("Using in-memory Chroma client for testing")
+        return chromadb.Client()
+
+    # For external Chroma connections
+    if CHROMA_HOST and CHROMA_PORT:
         print(f"Connecting to Chroma server at {CHROMA_HOST}:{CHROMA_PORT}")
-        return chromadb.HttpClient(host=CHROMA_HOST, port=int(CHROMA_PORT))
+        if USE_PERSISTENT_CHROMA:
+            # For persistent HTTP client mode (used by run_local.sh)
+            print("Using persistent HTTP client mode")
+            return chromadb.HttpClient(
+                host=CHROMA_HOST,
+                port=int(CHROMA_PORT),
+                tenant="default_tenant",
+                settings=chromadb.Settings(
+                    anonymized_telemetry=False,
+                    allow_reset=True,
+                ),
+            )
+        else:
+            # Standard HTTP client
+            return chromadb.HttpClient(
+                host=CHROMA_HOST,
+                port=int(CHROMA_PORT),
+            )
     else:
+        # Use local persistent Chroma
         print(f"Using local Chroma with persistence at {PERSIST_DIRECTORY}")
-        # Updated client initialization for newer ChromaDB versions
         return chromadb.PersistentClient(path=PERSIST_DIRECTORY)
 
 

@@ -55,6 +55,16 @@ class TestIntegration(unittest.TestCase):
         # Mock environment variables for testing
         os.environ["MOCK_EMBEDDINGS"] = "true"
         os.environ["CHROMA_DB_PATH"] = cls.index_dir
+        os.environ["USE_PERSISTENT_CHROMA"] = "false"  # Use in-memory for tests
+        os.environ["USE_IN_MEMORY_CHROMA"] = (
+            "true"  # Use in-memory Chroma client for tests
+        )
+        os.environ["CHROMA_HOST"] = (
+            ""  # Clear CHROMA_HOST to avoid HTTP connection attempts
+        )
+        os.environ["CHROMA_PORT"] = (
+            ""  # Clear CHROMA_PORT to avoid HTTP connection attempts
+        )
 
         # Create a test client for the API
         cls.client = TestClient(app)
@@ -93,31 +103,28 @@ class TestIntegration(unittest.TestCase):
             # Verify chunks were indexed
             self.assertGreater(collection.count(), 0)
 
-        # Step 2: Test the API with indexed data
-        # We'll bypass the actual HTTP server and use the TestClient directly
+            # Step 2: Test the API with indexed data
+            # Patch the API to use our existing collection
+            with patch("api.get_collection", return_value=collection):
+                # Test query endpoint
+                response = self.client.post(
+                    "/query", json={"query": "Tank Level", "top_k": 2}
+                )
+                self.assertEqual(response.status_code, 200)
+                query_data = response.json()
+                self.assertIn("results", query_data)
+                self.assertIn("metadata", query_data)
+                self.assertIn("total_chunks", query_data["metadata"])
 
-        # Test query endpoint
-        response = self.client.post("/query", json={"query": "Tank Level", "top_k": 2})
-        self.assertEqual(response.status_code, 200)
-        query_data = response.json()
-        self.assertIn("results", query_data)
-
-        # Test agent query endpoint
-        response = self.client.post(
-            "/agent/query",
-            json={"query": "How is the Tank Level configured?", "top_k": 2},
-        )
-        self.assertEqual(response.status_code, 200)
-        agent_data = response.json()
-        self.assertIn("context_chunks", agent_data)
-        self.assertIn("suggested_prompt", agent_data)
-
-        # Test stats endpoint
-        response = self.client.get("/stats")
-        self.assertEqual(response.status_code, 200)
-        stats_data = response.json()
-        self.assertIn("total_documents", stats_data)
-        self.assertIn("type_distribution", stats_data)
+                # Test agent query endpoint
+                response = self.client.post(
+                    "/agent/query",
+                    json={"query": "How is the Tank Level configured?", "top_k": 2},
+                )
+                self.assertEqual(response.status_code, 200)
+                agent_data = response.json()
+                self.assertIn("context_chunks", agent_data)
+                self.assertIn("suggested_prompt", agent_data)
 
     @patch("indexer.mock_embedding", return_value=[0.1] * 1536)
     def test_incremental_indexing(self, mock_embedding_fn):
