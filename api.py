@@ -99,63 +99,82 @@ def mock_embedding(text: str) -> List[float]:
 async def global_exception_handler(request: Request, exc: Exception):
     """Global exception handler to log all unhandled exceptions."""
     error_id = f"error-{time.time()}"
-    logger.error(f"Unhandled exception: {error_id} - {str(exc)}", exc_info=True)
+    logger.error(f"Error {error_id}: {exc}")
+    logger.error(traceback.format_exc())
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={
-            "error": "An unexpected error occurred",
+            "detail": "An unexpected error occurred",
             "error_id": error_id,
-            "detail": str(exc) if app.debug else "Internal Server Error",
+            "message": str(exc),
         },
     )
 
 
-# Initialize Chroma client - either local or remote
-try:
-    if CHROMA_HOST and CHROMA_PORT and not USE_PERSISTENT_CHROMA:
-        logger.info(f"Connecting to Chroma server at {CHROMA_HOST}:{CHROMA_PORT}")
-        chroma_client = chromadb.HttpClient(host=CHROMA_HOST, port=int(CHROMA_PORT))
-    else:
-        logger.info(f"Using local Chroma with persistence at {PERSIST_DIRECTORY}")
-        # Updated client initialization for newer ChromaDB versions
-        chroma_client = chromadb.PersistentClient(path=PERSIST_DIRECTORY)
-
-    # Get collection or create if it doesn't exist
-    collection = chroma_client.get_collection(name=COLLECTION_NAME)
-    logger.info(
-        f"Connected to collection '{COLLECTION_NAME}' with {collection.count()} documents"
-    )
-except Exception as e:
-    logger.error(f"Error connecting to Chroma: {e}", exc_info=True)
-    logger.info("Creating a new collection. Please run indexer.py to populate it.")
+# Initialize Chroma client
+def get_chroma_client():
+    """Initialize and return a Chroma client."""
     try:
-        # Try to create the collection if it doesn't exist
-        if CHROMA_HOST and CHROMA_PORT and not USE_PERSISTENT_CHROMA:
-            chroma_client = chromadb.HttpClient(host=CHROMA_HOST, port=int(CHROMA_PORT))
+        # Check if external Chroma server is specified
+        if CHROMA_HOST:
+            logger.info(f"Connecting to external Chroma at {CHROMA_HOST}:{CHROMA_PORT}")
+            client = chromadb.HttpClient(
+                host=CHROMA_HOST,
+                port=int(CHROMA_PORT) if CHROMA_PORT else 8000,
+                settings=Settings(anonymized_telemetry=False),
+            )
         else:
-            # Updated client initialization for newer ChromaDB versions
-            chroma_client = chromadb.PersistentClient(path=PERSIST_DIRECTORY)
-        collection = chroma_client.create_collection(name=COLLECTION_NAME)
-    except Exception as create_error:
-        logger.critical(
-            f"Failed to create Chroma collection: {create_error}", exc_info=True
+            # Use local persistent Chroma
+            logger.info(f"Using local Chroma with persistence at {PERSIST_DIRECTORY}")
+            client = chromadb.PersistentClient(
+                path=PERSIST_DIRECTORY, settings=Settings(anonymized_telemetry=False)
+            )
+
+        # Test connection works
+        client.heartbeat()
+        return client
+    except Exception as e:
+        logger.error(f"Failed to connect to Chroma: {e}")
+        logger.error(
+            f"Check if Chroma is running at {CHROMA_HOST or 'localhost'}:{CHROMA_PORT or '8000'}"
         )
-        # We'll continue execution, but API calls that use the collection will fail
+        # Create an in-memory client for fallback
+        logger.warning("Using in-memory Chroma as fallback (no persistence!)")
+        return chromadb.Client(Settings(anonymized_telemetry=False))
+
+
+# Initialize Chroma collection
+def get_collection():
+    """Get or create the collection for storing Ignition project data."""
+    try:
+        client = get_chroma_client()
+        # Check if collection exists, create it if it doesn't
+        try:
+            collection = client.get_collection(COLLECTION_NAME)
+            doc_count = collection.count()
+            logger.info(
+                f"Connected to collection '{COLLECTION_NAME}' with {doc_count} documents"
+            )
+        except ValueError:
+            logger.info(f"Creating new collection '{COLLECTION_NAME}'")
+            collection = client.create_collection(COLLECTION_NAME)
+
+        return collection
+    except Exception as e:
+        logger.error(f"Error connecting to collection: {e}")
+        # For API to start even without Chroma, return None
+        # Endpoints will need to check if collection is None
+        return None
 
 
 # Define query request model
 class QueryRequest(BaseModel):
-    query: str = Field(..., description="The natural language query to search for")
-    top_k: int = Field(5, description="Number of results to return", ge=1, le=20)
-    filter_type: Optional[str] = Field(
-        None, description="Filter results by document type (perspective or tag)"
-    )
-    filter_path: Optional[str] = Field(
-        None, description="Filter results by file path pattern"
-    )
-    use_mock: Optional[bool] = Field(
-        None,
-        description="Use mock embeddings for testing (overrides environment variable)",
+    """Request model for querying the vector database."""
+
+    query: str = Field(..., description="Query text to search for")
+    top_k: int = Field(3, description="Number of results to return")
+    filter_metadata: Dict[str, Any] = Field(
+        default=None, description="Optional metadata filters for the query"
     )
 
 
@@ -224,105 +243,96 @@ async def health_check(deps: None = Depends(verify_dependencies)):
     }
 
 
-@app.post("/query", response_model=QueryResponse)
-async def query_vector_store(
-    req: QueryRequest, deps: None = Depends(verify_dependencies)
-):
-    """Query the vector database for similar content."""
-    start_time = time.time()
-    logger.info(
-        f"Query request received: '{req.query}', top_k={req.top_k}, filters={req.filter_type}/{req.filter_path}"
-    )
+@app.post("/query", summary="Query the vector database")
+async def query(request: QueryRequest):
+    """
+    Search for relevant context from Ignition project files.
 
-    # Check if mock mode is requested for this query
-    use_mock = MOCK_EMBEDDINGS
-    if req.use_mock is not None:
-        use_mock = req.use_mock
-        logger.info(f"Mock mode overridden to: {use_mock}")
-
+    This endpoint performs semantic search using the query text.
+    """
     try:
-        # Prepare filter if any
-        where_filter = {}
-        if req.filter_type:
-            where_filter["type"] = req.filter_type
-        if req.filter_path:
-            where_filter["filepath"] = {"$contains": req.filter_path}
-
-        # Use where_filter only if it has any conditions
-        where_document = where_filter if where_filter else None
-
-        # Get embedding for the query
-        try:
-            embedding_start = time.time()
-
-            if use_mock:
-                # Use mock embedding if in mock mode
-                query_vector = mock_embedding(req.query)
-                logger.debug("Using mock embedding for query")
-            else:
-                # Use OpenAI API for real embedding
-                response = openai_client.embeddings.create(
-                    model="text-embedding-ada-002", input=[req.query]
-                )
-                query_vector = response.data[0].embedding
-
-            logger.debug(f"Generated embedding in {time.time() - embedding_start:.2f}s")
-        except Exception as e:
-            logger.error(f"Error generating embedding: {e}", exc_info=True)
-            if not use_mock:
-                logger.info("Falling back to mock embedding")
-                query_vector = mock_embedding(req.query)
-                use_mock = True
-            else:
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail=f"Error generating embedding: {str(e)}",
-                )
-
-        # Perform similarity search in Chroma
-        try:
-            query_start = time.time()
-            results = collection.query(
-                query_embeddings=[query_vector],
-                n_results=req.top_k,
-                where=where_document,
-            )
-            logger.debug(f"Chroma query completed in {time.time() - query_start:.2f}s")
-        except Exception as e:
-            logger.error(f"Error querying vector database: {e}", exc_info=True)
+        # Get collection (may be None if Chroma connection fails)
+        collection = get_collection()
+        if collection is None:
+            logger.error("Failed to connect to the vector database")
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Error querying vector database: {str(e)}",
+                status_code=503,
+                detail="Vector database is not available. Please check Chroma connection.",
             )
 
-        chunks = []
-        # Check if we got any results
-        if results and "documents" in results and results["documents"]:
-            # results["documents"][0] is list of document texts, [0] because we passed one query
-            for doc_text, meta, distance in zip(
-                results["documents"][0],
-                results["metadatas"][0],
-                results["distances"][0],
-            ):
-                chunks.append(
-                    Chunk(content=doc_text, metadata=meta, similarity=distance)
+        # Check if collection is empty
+        if collection.count() == 0:
+            logger.warning("Empty collection, no results will be returned")
+            return {
+                "results": [],
+                "metadata": {
+                    "total_chunks": 0,
+                    "query": request.query,
+                    "message": "The collection is empty. Please run the indexer to populate it.",
+                },
+            }
+
+        # Generate embedding for the query
+        query_embedding = None
+        if MOCK_EMBEDDINGS or not openai_client:
+            logger.info("Using mock embedding for query")
+            query_embedding = mock_embedding(request.query)
+        else:
+            try:
+                # Use OpenAI API to generate embedding
+                embedding_response = openai_client.embeddings.create(
+                    input=request.query, model="text-embedding-ada-002"
                 )
+                query_embedding = embedding_response.data[0].embedding
+            except Exception as e:
+                logger.error(f"Error generating embedding: {e}")
+                # Fallback to mock embedding
+                logger.info("Falling back to mock embedding")
+                query_embedding = mock_embedding(request.query)
 
-        response_time = time.time() - start_time
-        logger.info(
-            f"Query completed in {response_time:.2f}s, found {len(chunks)} results, mock_mode={use_mock}"
+        # Query the collection
+        results = collection.query(
+            query_embeddings=query_embedding,
+            n_results=request.top_k,
+            where=request.filter_metadata or None,
+            include=["metadatas", "documents", "distances"],
         )
-        return QueryResponse(results=chunks, total=len(chunks), mock_used=use_mock)
 
-    except HTTPException:
-        # Re-raise HTTP exceptions to preserve status code
-        raise
+        # Process and format results
+        processed_results = []
+        for i in range(len(results["ids"][0])):
+            metadata = results["metadatas"][0][i] if results["metadatas"] else {}
+            document = results["documents"][0][i] if results["documents"] else ""
+            distance = results["distances"][0][i] if results["distances"] else 0
+
+            # Convert distance to similarity score (cosine similarity)
+            similarity = 1.0 - distance if distance <= 2.0 else 0
+
+            # Add result
+            processed_results.append(
+                {
+                    "content": document,
+                    "metadata": metadata,
+                    "similarity": similarity,
+                    "id": results["ids"][0][i] if results["ids"] else None,
+                }
+            )
+
+        return {
+            "results": processed_results,
+            "metadata": {
+                "total_chunks": collection.count(),
+                "query": request.query,
+                "embedding_type": (
+                    "mock" if MOCK_EMBEDDINGS or not openai_client else "openai"
+                ),
+            },
+        }
+
     except Exception as e:
-        error_msg = f"Error processing query: {str(e)}"
-        logger.error(error_msg, exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=error_msg
-        )
+        logger.error(f"Error in query endpoint: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # Agent-optimized query for Cursor integration
