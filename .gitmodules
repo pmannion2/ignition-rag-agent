@@ -1,0 +1,3 @@
+[submodule "whk-ignition-scada"]
+	path = whk-ignition-scada
+	url = https://github.com/WhiskeyHouse/whk-ignition-scada.git

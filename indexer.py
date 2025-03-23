@@ -42,7 +42,7 @@ else:
 
 # Initialize tokenizer for GPT models
 enc = tiktoken.get_encoding("cl100k_base")
-MAX_TOKENS = 400  # Target max tokens per chunk
+MAX_TOKENS = 6000  # Increased from 400 to reduce API calls while staying under limits
 
 # Initialize Chroma client
 PERSIST_DIRECTORY = "chroma_index"
