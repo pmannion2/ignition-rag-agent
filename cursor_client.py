@@ -6,10 +6,11 @@ This script provides a client for integrating Ignition RAG with Cursor IDE.
 It connects directly to the RAG API and can be used as a standalone script or imported.
 """
 
+import argparse
+import json
 import os
 import sys
-import json
-import argparse
+
 import requests
 from dotenv import load_dotenv
 
