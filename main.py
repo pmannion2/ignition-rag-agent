@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 import os
-import chromadb
 from pathlib import Path
+
+import chromadb
 import openai
 from dotenv import load_dotenv
 
