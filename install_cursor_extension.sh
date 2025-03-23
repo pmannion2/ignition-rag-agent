@@ -7,6 +7,7 @@ set -e
 EXTENSION_NAME="ignition-rag"
 CURSOR_EXTENSIONS_DIR="$HOME/.cursor/extensions"
 EXTENSION_DIR="$CURSOR_EXTENSIONS_DIR/$EXTENSION_NAME"
+VENV_DIR="$EXTENSION_DIR/venv"
 
 # Check if cursor extension directory exists
 if [ ! -d "$CURSOR_EXTENSIONS_DIR" ]; then
@@ -45,7 +46,20 @@ cat > "$EXTENSION_DIR/extension.js" << EOF
 // Ignition RAG Extension Loader
 // This file is automatically loaded by Cursor on startup
 
+const { spawn } = require('child_process');
+const path = require('path');
+
+// Update the Python path in the extension
 try {
+  const fs = require('fs');
+  const extensionConfig = require('./cursor_extension');
+  
+  // Use the shell script wrapper to run the Python client
+  extensionConfig.configure({
+    clientScript: path.join(__dirname, 'run_client.sh'),
+    pythonPath: '' // Not needed as the shell script handles this
+  });
+  
   // Load the connector
   require('./cursor_connector');
   console.log('Ignition RAG Extension loaded successfully');
@@ -56,16 +70,38 @@ EOF
 
 # Check if Python is installed
 if ! command -v python3 &> /dev/null; then
-  echo "Warning: python3 not found. You may need to install Python 3 for the extension to work."
+  echo "Warning: python3 not found. You need to install Python 3 for the extension to work."
+  exit 1
 fi
 
-# Check if pip is installed
-if command -v pip3 &> /dev/null; then
-  echo "Installing Python dependencies..."
-  pip3 install requests python-dotenv
-else
-  echo "Warning: pip3 not found. You may need to install Python dependencies manually."
-  echo "Required packages: requests, python-dotenv"
+# Install Python dependencies
+echo "Setting up Python dependencies..."
+
+# Create a virtual environment for the extension
+echo "Creating a virtual environment..."
+python3 -m venv "$VENV_DIR" || {
+  echo "Failed to create virtual environment. Python venv module might be missing."
+  echo "You may need to install it manually:"
+  echo "  On macOS: brew install python-venv"
+  echo "  On Ubuntu/Debian: apt-get install python3-venv"
+  echo ""
+  echo "Alternatively, you can install the required packages manually:"
+  echo "  pip3 install --user requests python-dotenv"
+  echo ""
+  echo "Warning: Dependencies not installed automatically!"
+  HAS_VENV=false
+}
+
+# If venv was created successfully, install dependencies
+if [ -d "$VENV_DIR" ]; then
+  echo "Installing dependencies in virtual environment..."
+  "$VENV_DIR/bin/pip" install requests python-dotenv || {
+    echo "Failed to install dependencies in virtual environment."
+    echo "You may need to install them manually:"
+    echo "  pip3 install --user requests python-dotenv"
+  }
+  echo "Dependencies installed successfully in virtual environment."
+  HAS_VENV=true
 fi
 
 # Create .env file for the extension
@@ -74,10 +110,24 @@ if [ ! -f "$EXTENSION_DIR/.env" ]; then
   cat > "$EXTENSION_DIR/.env" << EOF
 # Ignition RAG Extension Configuration
 RAG_API_URL=http://localhost:8001
-PYTHON_PATH=python3
+PYTHON_PATH=$([ "$HAS_VENV" = true ] && echo "$VENV_DIR/bin/python3" || echo "python3")
 EOF
 fi
 
+# Create a shell script to run the client with the virtual environment
+cat > "$EXTENSION_DIR/run_client.sh" << EOF
+#!/bin/bash
+$([ "$HAS_VENV" = true ] && echo "$VENV_DIR/bin/python3" || echo "python3") "$EXTENSION_DIR/cursor_client.py" "\$@"
+EOF
+chmod +x "$EXTENSION_DIR/run_client.sh"
+
+echo ""
 echo "Ignition RAG extension has been installed to $EXTENSION_DIR"
+if [ "$HAS_VENV" = true ]; then
+  echo "✅ Virtual environment created and dependencies installed successfully."
+else
+  echo "⚠️  Virtual environment setup failed. You may need to install dependencies manually:"
+  echo "   pip3 install --user requests python-dotenv"
+fi
 echo "To configure the extension, edit $EXTENSION_DIR/.env"
 echo "Restart Cursor to enable the extension" 

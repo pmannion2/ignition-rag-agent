@@ -6,19 +6,20 @@ const path = require('path');
 const fs = require('fs');
 
 // Configuration
-const DEFAULT_RAG_API_URL = 'http://localhost:8001';
+const DEFAULT_RAG_API_URL = process.env.RAG_API_URL || 'http://localhost:8001';
 const DEFAULT_PYTHON_SCRIPT = path.join(__dirname, 'cursor_client.py');
+const SHELL_SCRIPT_WRAPPER = path.join(__dirname, 'run_client.sh');
 
 // Extension configuration
 let config = {
   ragApiUrl: process.env.RAG_API_URL || DEFAULT_RAG_API_URL,
   pythonPath: process.env.PYTHON_PATH || 'python3',
-  clientScript: DEFAULT_PYTHON_SCRIPT,
+  clientScript: fs.existsSync(SHELL_SCRIPT_WRAPPER) ? SHELL_SCRIPT_WRAPPER : DEFAULT_PYTHON_SCRIPT,
   enabled: true,
   topK: 3,
 };
 
-// Check if the Python script exists
+// Check if the client script exists
 function verifySetup() {
   try {
     if (!fs.existsSync(config.clientScript)) {
@@ -55,17 +56,35 @@ async function getIgnitionContext(query, context = {}) {
       // Get current file path from cursor context
       const currentFile = context.currentFile || '';
 
-      // Prepare arguments for Python script
-      const args = [
-        config.clientScript,
-        query,
-        '--file', currentFile,
-        '--top-k', config.topK.toString(),
-        '--output', 'text'
-      ];
+      // Determine if we're using the shell script wrapper
+      const isUsingWrapper = config.clientScript.endsWith('run_client.sh');
+      
+      // Prepare arguments for Python script or shell wrapper
+      let args = [];
+      if (isUsingWrapper) {
+        // Shell script already includes the path to the Python script
+        args = [
+          query,
+          '--file', currentFile,
+          '--top-k', config.topK.toString(),
+          '--output', 'text'
+        ];
+      } else {
+        // Using Python directly
+        args = [
+          config.clientScript,
+          query,
+          '--file', currentFile,
+          '--top-k', config.topK.toString(),
+          '--output', 'text'
+        ];
+      }
 
-      // Spawn Python process
-      const process = spawn(config.pythonPath, args, {
+      // Prepare the command to run
+      const command = isUsingWrapper ? config.clientScript : config.pythonPath;
+      
+      // Spawn process
+      const process = spawn(command, args, {
         env: { ...process.env, RAG_API_URL: config.ragApiUrl }
       });
 

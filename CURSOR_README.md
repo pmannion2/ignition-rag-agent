@@ -11,12 +11,17 @@ This extension integrates the Ignition RAG (Retrieval-Augmented Generation) syst
 
 ## Installation
 
-### Option 1: Using the installation script
+### Option 1: Using the installation script (Recommended)
 
 1. Run the installation script:
    ```bash
    ./install_cursor_extension.sh
    ```
+
+   The script will:
+   - Create a virtual environment for Python dependencies
+   - Install required packages in the isolated environment
+   - Configure the extension to use the virtual environment
 
 2. Restart Cursor to enable the extension
 
@@ -27,18 +32,60 @@ This extension integrates the Ignition RAG (Retrieval-Augmented Generation) syst
    mkdir -p ~/.cursor/extensions/ignition-rag
    ```
 
-2. Copy the extension files:
+2. Create a virtual environment for Python dependencies:
    ```bash
-   cp cursor_extension.js cursor_client.py cursor.config.json ~/.cursor/extensions/ignition-rag/
+   python3 -m venv ~/.cursor/extensions/ignition-rag/venv
    ```
 
-3. Create a .env file in the extension directory:
+3. Install required Python packages:
+   ```bash
+   ~/.cursor/extensions/ignition-rag/venv/bin/pip install requests python-dotenv
+   ```
+
+4. Copy the extension files:
+   ```bash
+   cp cursor_extension.js cursor_client.py cursor.config.json cursor_integration.js cursor_connector.js ~/.cursor/extensions/ignition-rag/
+   ```
+
+5. Create a shell script wrapper for the Python client:
+   ```bash
+   echo '#!/bin/bash
+   ~/.cursor/extensions/ignition-rag/venv/bin/python3 ~/.cursor/extensions/ignition-rag/cursor_client.py "$@"' > ~/.cursor/extensions/ignition-rag/run_client.sh
+   chmod +x ~/.cursor/extensions/ignition-rag/run_client.sh
+   ```
+
+6. Create a .env file in the extension directory:
    ```
    RAG_API_URL=http://localhost:8001
-   PYTHON_PATH=python3
+   PYTHON_PATH=~/.cursor/extensions/ignition-rag/venv/bin/python3
    ```
 
-4. Restart Cursor to enable the extension
+7. Restart Cursor to enable the extension
+
+## Troubleshooting Installation
+
+### External Environment Errors
+
+If you encounter an error about "externally-managed-environment" during installation, this is because your system Python is protected from modifications. The installation script will handle this by creating a virtual environment, but if you encounter issues:
+
+1. Check that the Python venv module is installed:
+   ```bash
+   # On macOS with Homebrew
+   brew install python-venv
+   
+   # On Ubuntu/Debian
+   sudo apt-get install python3-venv
+   ```
+
+2. If you still have issues, manually install the dependencies:
+   ```bash
+   pip3 install --user requests python-dotenv
+   ```
+
+3. Edit the `.env` file to point to your system Python:
+   ```
+   PYTHON_PATH=python3
+   ```
 
 ## Usage
 
@@ -60,7 +107,7 @@ You can configure the extension by editing the `.env` file in the extension dire
 ```
 # Ignition RAG Extension Configuration
 RAG_API_URL=http://localhost:8001  # URL of your RAG API
-PYTHON_PATH=python3                # Path to Python interpreter
+PYTHON_PATH=/path/to/python        # Path to Python interpreter (usually automatic)
 ```
 
 ## Requirements
@@ -77,6 +124,7 @@ If the extension is not working as expected:
 2. Check the Cursor console for error messages (Help > Toggle Developer Tools)
 3. Verify that Python is installed and accessible
 4. Make sure the extension is correctly installed in `~/.cursor/extensions/ignition-rag/`
+5. Verify the virtual environment was created successfully at `~/.cursor/extensions/ignition-rag/venv/`
 
 ## License
 
