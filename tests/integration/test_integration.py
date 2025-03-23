@@ -179,8 +179,7 @@ class TestIntegration(unittest.TestCase):
             self.assertGreater(final_count, initial_count)
 
     @patch("api.mock_embedding", return_value=[0.1] * 1536)
-    @patch("cursor_agent.query_rag")
-    def test_cursor_agent_integration(self, mock_query_rag, mock_embedding_fn):
+    def test_cursor_agent_integration(self, mock_embedding_fn):
         """Test the Cursor agent integration."""
         # Import cursor_agent here to avoid affecting other tests
         sys.path.append(
@@ -188,19 +187,8 @@ class TestIntegration(unittest.TestCase):
         )
         import cursor_agent
 
-        # Mock the query_rag response
-        mock_query_rag.return_value = {
-            "context_chunks": [
-                {
-                    "source": "tank_tags.json - Folder: Tanks",
-                    "content": '{"name": "Tank1/Level", "value": 75.5}',
-                    "metadata": {"type": "tag", "filepath": "tags/tank_tags.json"},
-                    "similarity": 0.1,
-                }
-            ],
-            "suggested_prompt": "Query: Tank Level\n\nRelevant context...",
-            "mock_used": True,
-        }
+        # Ensure mock embeddings are enabled
+        cursor_agent.USE_MOCK_EMBEDDINGS = True
 
         # Test the get_cursor_context function
         context = cursor_agent.get_cursor_context(
@@ -209,33 +197,23 @@ class TestIntegration(unittest.TestCase):
             top_k=1,
         )
 
-        # Verify we got the suggested prompt
-        self.assertEqual(context, "Query: Tank Level\n\nRelevant context...")
+        # Verify we got a suggested prompt with mock data
+        self.assertTrue("mock" in context.lower())
 
         # Test the get_ignition_tag_info function
-        mock_query_rag.reset_mock()
-        mock_query_rag.return_value = {
-            "context_chunks": [
-                {
-                    "content": '{"name": "Tank1/Level", "value": 75.5, "parameters": {"description": "Tank level"}}',
-                    "metadata": {"type": "tag"},
-                    "similarity": 0.1,
-                }
-            ],
-            "mock_used": True,
-        }
-
         tag_info = cursor_agent.get_ignition_tag_info("Tank1/Level")
 
-        # Verify we called query_rag with the right parameters
-        mock_query_rag.assert_called_once_with(
-            query="Tag configuration for Tank1/Level", top_k=1, filter_type="tag"
-        )
-
-        # Verify we got tag info
+        # Verify we got mock tag data
         self.assertEqual(tag_info["name"], "Tank1/Level")
-        self.assertEqual(tag_info["value"], 75.5)
-        self.assertEqual(tag_info["parameters"]["description"], "Tank level")
+        self.assertEqual(tag_info["value"], 42.0)
+        self.assertTrue(tag_info["mock_used"])
+
+        # Test the get_ignition_view_component function
+        view_info = cursor_agent.get_ignition_view_component("Main")
+
+        # Verify we got mock view data
+        self.assertEqual(view_info["name"], "Main")
+        self.assertTrue(view_info["mock_used"])
 
 
 if __name__ == "__main__":

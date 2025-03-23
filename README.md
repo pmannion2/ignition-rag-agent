@@ -203,4 +203,36 @@ We use GitHub Actions for continuous integration and deployment. The pipeline:
 
 ## 📄 License
 
-MIT License - See LICENSE file for details. 
+MIT License - See LICENSE file for details.
+
+## Testing
+
+### Mock Embeddings
+
+The system supports a mock embeddings mode for testing without requiring an OpenAI API key. This is useful for:
+
+- Running tests in CI/CD pipelines
+- Local development without API credentials
+- Reducing costs during testing
+
+To enable mock embeddings:
+
+```bash
+# Set environment variable
+export MOCK_EMBEDDINGS=true
+
+# Run tests
+python -m pytest
+```
+
+In mock embedding mode, instead of making API calls to OpenAI, a fixed embedding vector is returned, allowing all functionality to be tested without actual embedding generation.
+
+The mock implementation is available in both the `indexer.py` and `api.py` modules:
+
+```python
+def mock_embedding(text):
+    """Mock embedding function that returns a fixed vector."""
+    return [0.1] * 1536  # Same dimensionality as OpenAI's text-embedding-ada-002
+```
+
+When running the test suite with `run_tests.sh`, mock embeddings are enabled by default. 

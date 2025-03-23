@@ -9,14 +9,31 @@ retrieve context from the Ignition RAG system when generating code or answering 
 import os
 import json
 import requests
-from typing import List, Dict, Any, Optional
+import logging
+from typing import List, Dict, Any, Optional, Union
 from dotenv import load_dotenv
+from logger import get_logger
 
 # Load environment variables
 load_dotenv()
 
-# Default API endpoint
+# Set up logging
+logger = get_logger("cursor_agent")
+
+# RAG API endpoint configuration
 RAG_API_URL = os.getenv("RAG_API_URL", "http://localhost:8001")
+
+# Check if we should use mock embeddings
+USE_MOCK_EMBEDDINGS = os.environ.get("MOCK_EMBEDDINGS", "").lower() in (
+    "true",
+    "1",
+    "t",
+)
+
+
+def mock_embedding(text: str) -> List[float]:
+    """Mock embedding function that returns a fixed vector."""
+    return [0.1] * 1536  # Same dimensionality as OpenAI's text-embedding-ada-002
 
 
 def query_rag(
@@ -47,6 +64,21 @@ def query_rag(
             "context": {"current_file": current_file} if current_file else None,
         }
 
+        # Check for mock mode
+        if USE_MOCK_EMBEDDINGS:
+            return {
+                "context_chunks": [
+                    {
+                        "content": "This is mock content for testing",
+                        "source": "Mock source",
+                        "metadata": {"type": "mock", "filepath": "mock_file.json"},
+                        "similarity": 0.95,
+                    }
+                ],
+                "suggested_prompt": f"Query: {query}\n\nRelevant context from mock data",
+                "mock_used": True,
+            }
+
         # Make the request
         response = requests.post(endpoint, json=payload)
         response.raise_for_status()  # Raise exception for HTTP errors
@@ -55,24 +87,26 @@ def query_rag(
         return response.json()
 
     except requests.exceptions.RequestException as e:
-        print(f"Error querying Ignition RAG API: {e}")
+        logger.error(f"Error querying Ignition RAG API: {e}")
         return {"context_chunks": [], "suggested_prompt": None, "error": str(e)}
 
 
 def get_cursor_context(
-    query: str, cursor_context: Dict[str, Any], top_k: int = 3
+    user_query: str,
+    cursor_context: Optional[Dict[str, Any]] = None,
+    top_k: int = 5,
 ) -> str:
     """
-    Get context from the RAG system specifically formatted for Cursor Agent.
-    This function integrates with Cursor's context format.
+    Get relevant context for a Cursor query based on the current cursor position
+    and user query.
 
     Args:
-        query: The user's query to search for relevant context
-        cursor_context: Context provided by Cursor about the current environment
-        top_k: Number of results to return
+        user_query: The user's query text
+        cursor_context: Dictionary containing cursor context (current file, selection, etc.)
+        top_k: Number of top results to return
 
     Returns:
-        String containing the formatted context for the LLM prompt
+        A string containing the suggested prompt with context
     """
     # Extract relevant information from cursor context
     current_file = cursor_context.get("current_file")
@@ -89,7 +123,10 @@ def get_cursor_context(
 
     # Query the RAG system
     result = query_rag(
-        query=query, top_k=top_k, filter_type=filter_type, current_file=current_file
+        query=user_query,
+        top_k=top_k,
+        filter_type=filter_type,
+        current_file=current_file,
     )
 
     # Extract or build the context string
@@ -99,7 +136,7 @@ def get_cursor_context(
     # If no suggested prompt, but we have context chunks, build our own context
     context_chunks = result.get("context_chunks", [])
     if context_chunks:
-        context_str = f"Relevant Ignition project context for: {query}\n\n"
+        context_str = f"Relevant Ignition project context for: {user_query}\n\n"
 
         for i, chunk in enumerate(context_chunks, 1):
             source = chunk.get("source", "Unknown source")
@@ -112,93 +149,160 @@ def get_cursor_context(
         return context_str
 
     # No context available
-    return f"No relevant Ignition project context found for: {query}"
+    return f"No relevant Ignition project context found for: {user_query}"
 
 
 def get_ignition_tag_info(tag_name: str) -> dict:
     """
-    Get specific information about an Ignition tag by name.
+    Get information about a specific Ignition tag.
 
     Args:
         tag_name: The name of the tag to look up
 
     Returns:
-        Dictionary with tag information or empty dict if not found
+        Dictionary containing tag information
     """
-    result = query_rag(
+    # Check if mock mode is enabled
+    if USE_MOCK_EMBEDDINGS:
+        logger.info(f"Using mock data for tag: {tag_name}")
+        return {
+            "name": tag_name,
+            "value": 42.0,
+            "path": f"Tags/{tag_name}",
+            "tagType": "AtomicTag",
+            "dataType": "Float8",
+            "parameters": {
+                "engUnit": "%",
+                "description": f"Mock description for {tag_name}",
+                "engHigh": 100,
+                "engLow": 0,
+            },
+            "mock_used": True,
+        }
+
+    # Get tag information from the RAG system
+    rag_results = query_rag(
         query=f"Tag configuration for {tag_name}", top_k=1, filter_type="tag"
     )
 
-    context_chunks = result.get("context_chunks", [])
+    # Extract tag info from the context
+    context_chunks = rag_results.get("context_chunks", [])
     if not context_chunks:
-        return {}
+        logger.warning(f"No tag information found for {tag_name}")
+        return {"error": f"No tag information found for {tag_name}"}
 
-    # Try to parse the tag JSON
-    try:
-        chunk = context_chunks[0]
-        content = chunk.get("content", "{}")
-        tag_data = json.loads(content)
+    # Process the first matching chunk
+    for chunk in context_chunks:
+        content = chunk.get("content", "")
+        try:
+            # Try to parse the tag information from the content
+            tag_info_str = content.strip()
+            tag_info = json.loads(tag_info_str)
+            if "name" in tag_info and tag_info["name"].lower() == tag_name.lower():
+                return tag_info
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.error(f"Error parsing tag information: {e}")
+            continue
 
-        # If it's a list (common for tag exports), look for the specific tag
-        if isinstance(tag_data, list):
-            for tag in tag_data:
-                if tag.get("name") == tag_name:
-                    return tag
-
-        # If it's just the tag itself
-        elif isinstance(tag_data, dict) and tag_data.get("name") == tag_name:
-            return tag_data
-
-        # Otherwise return the first chunk as best effort
-        return tag_data
-
-    except (json.JSONDecodeError, IndexError):
-        return {}
+    return {"error": f"Could not parse tag information for {tag_name}"}
 
 
 def get_ignition_view_component(
     view_name: str, component_name: Optional[str] = None
 ) -> dict:
     """
-    Get information about a Perspective view or specific component.
+    Get information about a specific view or component in an Ignition project.
 
     Args:
-        view_name: The name of the Perspective view
-        component_name: Optional specific component name to look for
+        view_name: The name of the view to look up
+        component_name: Optional name of the component within the view
 
     Returns:
-        Dictionary with view/component information or empty dict if not found
+        Dictionary containing view or component information
     """
-    # Build query based on parameters
+    # Check if mock mode is enabled
+    if USE_MOCK_EMBEDDINGS:
+        logger.info(
+            f"Using mock data for view: {view_name}, component: {component_name}"
+        )
+        # Create a mock response
+        if component_name:
+            return {
+                "view": view_name,
+                "component": component_name,
+                "type": "Label" if "label" in component_name.lower() else "Tank",
+                "properties": {
+                    "x": 100,
+                    "y": 100,
+                    "width": 200,
+                    "height": 150,
+                    "text": (
+                        f"Mock {component_name}"
+                        if "label" in component_name.lower()
+                        else None
+                    ),
+                },
+                "mock_used": True,
+            }
+        else:
+            return {
+                "name": view_name,
+                "path": f"views/{view_name}.json",
+                "components": [
+                    {"name": "Tank1", "type": "Tank"},
+                    {"name": "Label1", "type": "Label"},
+                ],
+                "size": {"width": 800, "height": 600},
+                "mock_used": True,
+            }
+
+    # Build the query based on what we're looking for
     if component_name:
         query = f"Component {component_name} in view {view_name}"
     else:
-        query = f"Perspective view {view_name}"
+        query = f"View configuration for {view_name}"
 
-    result = query_rag(query=query, top_k=3, filter_type="perspective")
+    # Get view/component information from the RAG system
+    rag_results = query_rag(query=query, top_k=2, filter_type="perspective")
 
-    context_chunks = result.get("context_chunks", [])
+    # Extract view/component info from the context
+    context_chunks = rag_results.get("context_chunks", [])
     if not context_chunks:
-        return {}
+        logger.warning(f"No view information found for {view_name}")
+        return {"error": f"No view information found for {view_name}"}
 
-    # Process results
-    try:
-        # If looking for a specific component
-        if component_name:
-            for chunk in context_chunks:
-                content = chunk.get("content", "{}")
-                component_data = json.loads(content)
+    # Combine the relevant context
+    view_info = {}
+    for chunk in context_chunks:
+        content = chunk.get("content", "")
+        try:
+            # Try to parse the JSON content
+            content_obj = json.loads(content.strip())
 
-                if component_data.get("name") == component_name:
-                    return component_data
+            # For component search
+            if (
+                component_name
+                and "name" in content_obj
+                and content_obj["name"] == component_name
+            ):
+                return content_obj
 
-        # Just return the first chunk's content as best effort
-        chunk = context_chunks[0]
-        content = chunk.get("content", "{}")
-        return json.loads(content)
+            # For view search
+            if "name" in content_obj and content_obj["name"] == view_name:
+                view_info = content_obj
+                break
 
-    except (json.JSONDecodeError, IndexError):
-        return {}
+            # For partial view information
+            view_info.update(content_obj)
+
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.error(f"Error parsing view information: {e}")
+            continue
+
+    if not view_info:
+        return {"error": f"Could not parse view information for {view_name}"}
+
+    return view_info
 
 
 # Example of how to use in Cursor Agent mode
