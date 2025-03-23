@@ -11,14 +11,42 @@ from fastapi.testclient import TestClient
 sys.path.append(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 )
-from api import MOCK_EMBEDDINGS, app, collection, mock_embedding
 
-# Set mock mode for testing
-os.environ["MOCK_EMBEDDINGS"] = "true"
+# Import after path setup
+import api
+from api import app, collection, mock_embedding
 
 
 class TestAPI(unittest.TestCase):
     """Test cases for the API endpoints."""
+
+    mock_patches = []
+
+    @classmethod
+    def setUpClass(cls):
+        """Set up test class with patches."""
+        # Apply mock patches at class level
+        cls.mock_embeddings_patch = patch.object(api, "MOCK_EMBEDDINGS", True)
+        cls.mock_embeddings_patch.start()
+        cls.mock_patches.append(cls.mock_embeddings_patch)
+
+        # Directly patch the verify_dependencies function to do nothing
+        # This ensures tests aren't affected by dependency checks
+        async def mock_verify_dependencies():
+            pass
+
+        cls.verify_dependencies_patch = patch.object(
+            api, "verify_dependencies", mock_verify_dependencies
+        )
+        cls.verify_dependencies_patch.start()
+        cls.mock_patches.append(cls.verify_dependencies_patch)
+
+    @classmethod
+    def tearDownClass(cls):
+        """Clean up patches."""
+        # Stop all patches
+        for mock_patch in cls.mock_patches:
+            mock_patch.stop()
 
     def setUp(self):
         """Set up test environment."""
