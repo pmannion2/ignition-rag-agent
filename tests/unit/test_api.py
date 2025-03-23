@@ -69,6 +69,8 @@ def test_query():
         "metadatas": [[{"type": "perspective"}, {"type": "tag"}]],
         "documents": [["doc1 content", "doc2 content"]],
     }
+    # Configure the count method to return 2
+    mock_collection.count.return_value = 2
 
     # Call the API
     with patch("api.get_collection", return_value=mock_collection):
@@ -91,6 +93,8 @@ def test_query():
 
         # Verify collection.query was called with the embedding
         mock_collection.query.assert_called_once()
+        # Verify collection.count was called twice (once for empty check, once for metadata)
+        assert mock_collection.count.call_count == 2
 
 
 def test_query_filter():
