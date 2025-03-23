@@ -109,7 +109,27 @@ You can configure different environments using environment variables:
 
 ## 🔌 Cursor Integration
 
-This project includes integration with Cursor's Agent functionality to enhance code completion with context from your Ignition project.
+This project includes comprehensive integration with Cursor IDE to enhance code completion and AI responses with context from your Ignition project.
+
+### Cursor Extension
+
+We provide a full Cursor extension that seamlessly integrates with the IDE:
+
+1. Install the extension:
+   ```bash
+   ./install_cursor_extension.sh
+   ```
+
+2. Restart Cursor to enable the extension
+
+3. Use Cursor's AI features with Ignition-related prompts to automatically retrieve context
+
+The extension includes:
+- Automatic enhancement of Ignition-related prompts with relevant context
+- Integration with Cursor's agent system
+- Configuration options via `.env` file
+
+See the [Cursor Extension README](CURSOR_README.md) for more details.
 
 ### Python Integration
 
@@ -141,6 +161,18 @@ cursor.registerCommandEnhancer(async (command, context) => {
     language: context.language,
   });
 });
+```
+
+### Testing the Integration
+
+To quickly test the integration without restarting Cursor:
+
+```bash
+# Make test script executable
+chmod +x test_integration.js
+
+# Run the test script
+./test_integration.js
 ```
 
 ## 🧪 Testing
@@ -198,6 +230,10 @@ We use GitHub Actions for continuous integration and deployment. The pipeline:
 - `watcher.py`: Optional file watcher for automatic re-indexing
 - `cursor_agent.py`: Python module for Cursor integration
 - `cursor_integration.js`: JavaScript integration for Cursor
+- `cursor_extension.js`: Cursor extension implementation
+- `cursor_client.py`: Python client for the Cursor extension
+- `cursor_connector.js`: Connector for Cursor's agent system
+- `install_cursor_extension.sh`: Installation script for the Cursor extension
 - `chroma_index/`: Directory where the vector database is stored
 - `docker-compose.yml`: Docker Compose configuration
 - `Dockerfile`: Docker configuration

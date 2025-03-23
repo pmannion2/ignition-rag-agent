@@ -1,0 +1,60 @@
+{
+  "name": "Ignition RAG Extension",
+  "version": "1.0.0",
+  "description": "Enhances Cursor AI with context from Ignition projects",
+  "main": "cursor_extension.js",
+  "author": "Cursor RAG Team",
+  "license": "MIT",
+  "engines": {
+    "cursor": ">=0.9.0"
+  },
+  "categories": [
+    "AI Enhancement",
+    "Context Providers"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "ignition-rag.enable",
+        "title": "Enable Ignition RAG"
+      },
+      {
+        "command": "ignition-rag.disable",
+        "title": "Disable Ignition RAG"
+      },
+      {
+        "command": "ignition-rag.configure",
+        "title": "Configure Ignition RAG"
+      }
+    ],
+    "configuration": {
+      "title": "Ignition RAG",
+      "properties": {
+        "ignition-rag.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable/disable the Ignition RAG extension"
+        },
+        "ignition-rag.apiUrl": {
+          "type": "string",
+          "default": "http://localhost:8001",
+          "description": "URL of the Ignition RAG API server"
+        },
+        "ignition-rag.pythonPath": {
+          "type": "string",
+          "default": "python3",
+          "description": "Path to the Python interpreter"
+        },
+        "ignition-rag.topK": {
+          "type": "number",
+          "default": 3,
+          "description": "Number of context chunks to retrieve"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "test": "echo \"No tests specified\""
+  },
+  "dependencies": {}
+}
