@@ -51,6 +51,7 @@ COLLECTION_NAME = "ignition_project"
 # Check if running in Docker with external Chroma
 CHROMA_HOST = os.getenv("CHROMA_HOST")
 CHROMA_PORT = os.getenv("CHROMA_PORT")
+USE_PERSISTENT_CHROMA = os.getenv("USE_PERSISTENT_CHROMA", "false").lower() == "true"
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -110,7 +111,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 # Initialize Chroma client - either local or remote
 try:
-    if CHROMA_HOST and CHROMA_PORT:
+    if CHROMA_HOST and CHROMA_PORT and not USE_PERSISTENT_CHROMA:
         logger.info(f"Connecting to Chroma server at {CHROMA_HOST}:{CHROMA_PORT}")
         chroma_client = chromadb.HttpClient(host=CHROMA_HOST, port=int(CHROMA_PORT))
     else:
@@ -128,7 +129,7 @@ except Exception as e:
     logger.info("Creating a new collection. Please run indexer.py to populate it.")
     try:
         # Try to create the collection if it doesn't exist
-        if CHROMA_HOST and CHROMA_PORT:
+        if CHROMA_HOST and CHROMA_PORT and not USE_PERSISTENT_CHROMA:
             chroma_client = chromadb.HttpClient(host=CHROMA_HOST, port=int(CHROMA_PORT))
         else:
             # Updated client initialization for newer ChromaDB versions

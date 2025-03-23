@@ -51,13 +51,14 @@ LAST_INDEX_TIME_FILE = "last_index_time.pkl"
 # Check if running in Docker with external Chroma
 CHROMA_HOST = os.getenv("CHROMA_HOST")
 CHROMA_PORT = os.getenv("CHROMA_PORT")
+USE_PERSISTENT_CHROMA = os.getenv("USE_PERSISTENT_CHROMA", "false").lower() == "true"
 
 app = typer.Typer()
 
 
 def setup_chroma_client():
     """Set up and return a Chroma client with persistence."""
-    if CHROMA_HOST and CHROMA_PORT:
+    if CHROMA_HOST and CHROMA_PORT and not USE_PERSISTENT_CHROMA:
         print(f"Connecting to Chroma server at {CHROMA_HOST}:{CHROMA_PORT}")
         return chromadb.HttpClient(host=CHROMA_HOST, port=int(CHROMA_PORT))
     else:

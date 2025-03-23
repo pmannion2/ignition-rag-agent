@@ -1,0 +1,73 @@
+services:
+  # Chroma Vector Database
+  chroma:
+    image: chromadb/chroma:latest
+    volumes:
+      - chroma_data:/chroma/chroma
+    environment:
+      - ALLOW_RESET=true
+      - ANONYMIZED_TELEMETRY=false
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    ports:
+      - "8001:8000" # Map to different port to avoid conflict with API
+
+  # API Service
+  api:
+    build: .
+    volumes:
+      - ./:/app # Mount code for development
+      - chroma_index:/app/chroma_index # Vector DB persistence
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-mock_key}
+      - CHROMA_HOST=chroma
+      - CHROMA_PORT=8000
+      - MOCK_EMBEDDINGS=true
+      - USE_PERSISTENT_CHROMA=true # Use persistent local storage instead of HTTP
+    ports:
+      - "8000:8000"
+    depends_on:
+      chroma:
+        condition: service_healthy
+    command: uvicorn api:app --host 0.0.0.0 --port 8000
+
+  # Indexer - set up initial index
+  indexer:
+    build: .
+    volumes:
+      - ./:/app # Mount code for development
+      - chroma_index:/app/chroma_index # Vector DB persistence
+      - ./tests/data:/ignition_project # Use test data for indexing
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-mock_key}
+      - CHROMA_HOST=chroma
+      - CHROMA_PORT=8000
+      - MOCK_EMBEDDINGS=true
+      - USE_PERSISTENT_CHROMA=true # Use persistent local storage instead of HTTP
+    depends_on:
+      chroma:
+        condition: service_healthy
+    command: python indexer.py /ignition_project
+
+  # E2E Test Runner
+  e2e:
+    build:
+      context: .
+      dockerfile: Dockerfile.e2e
+    volumes:
+      - ./:/app # Mount code for development
+    environment:
+      - API_HOST=api
+      - API_PORT=8000
+      - MOCK_EMBEDDINGS=true
+    depends_on:
+      - api
+      - indexer
+    command: pytest -xvs tests/e2e/
+
+volumes:
+  chroma_data: # Persistent volume for Chroma DB
+  chroma_index: # Persistent volume for our index

@@ -145,27 +145,35 @@ cursor.registerCommandEnhancer(async (command, context) => {
 
 ## 🧪 Testing
 
-This project includes comprehensive tests to ensure reliability:
+### Running Unit Tests
 
-### Running Tests
-
+Run the included unit and integration tests:
 ```bash
-# Run all tests with coverage report
-pytest
-
-# Run just unit tests
-pytest tests/unit
-
-# Run integration tests
-pytest tests/integration
-
-# Run with specific marker
-pytest -m unit
+./run_tests.sh
 ```
 
-### Test Data
+### End-to-End Testing with Docker
 
-Sample test data is located in the `tests/data` directory.
+The project includes end-to-end tests that validate the full application stack using Docker:
+
+1. Ensure Docker and docker-compose are installed on your system.
+
+2. Run the E2E test suite:
+   ```bash
+   ./run_e2e_tests.sh
+   ```
+
+This will:
+- Build all necessary Docker containers
+- Start the application stack with test data
+- Run E2E tests against the live services
+- Clean up containers when done
+
+For CI/CD environments, add the following to your workflow:
+```yaml
+- name: Run E2E Tests
+  run: ./run_e2e_tests.sh
+```
 
 ## 📊 Performance Monitoring
 
