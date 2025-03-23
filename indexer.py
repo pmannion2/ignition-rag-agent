@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
-import os
+import hashlib
 import json
-import time
+import os
 import pickle
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import chromadb
+import numpy as np
 import tiktoken
 import typer
-import hashlib
-import numpy as np
-from typing import List, Dict, Any, Optional
-from pathlib import Path
-from datetime import datetime
-import chromadb
 from chromadb.config import Settings
-from openai import OpenAI
 from dotenv import load_dotenv
+from openai import OpenAI
 
 # Load environment variables from .env file
 load_dotenv()

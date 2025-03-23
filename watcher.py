@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
-import os
-import time
 import argparse
+import os
 import subprocess
+import time
 from pathlib import Path
-from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
-from watchdog.events import FileCreatedEvent, FileModifiedEvent, FileDeletedEvent
+
 import typer
+from watchdog.events import (
+    FileCreatedEvent,
+    FileDeletedEvent,
+    FileModifiedEvent,
+    FileSystemEventHandler,
+)
+from watchdog.observers import Observer
 
 # Initialize Typer app
 app = typer.Typer()

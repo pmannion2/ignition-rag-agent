@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-import requests
-import json
 import argparse
+import json
+
+import requests
 
 
 def query_rag_api(

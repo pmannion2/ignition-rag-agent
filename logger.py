@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
+import logging
 import os
 import sys
-import logging
-from logging.handlers import RotatingFileHandler
 import time
+from logging.handlers import RotatingFileHandler
 
 # Configure logging
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()

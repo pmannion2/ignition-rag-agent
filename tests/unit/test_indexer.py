@@ -1,25 +1,25 @@
 #!/usr/bin/env python3
-import os
 import json
-import unittest
-from unittest.mock import patch, MagicMock
+import os
+import shutil
 import sys
 import tempfile
-import shutil
+import unittest
+from unittest.mock import MagicMock, patch
 
 # Add parent directory to path to import indexer
 sys.path.append(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 )
 from indexer import (
+    MOCK_EMBEDDINGS,
     chunk_perspective_view,
     chunk_tag_config,
+    create_chunks,
     find_json_files,
     load_json_files,
-    create_chunks,
-    process_component,
-    MOCK_EMBEDDINGS,
     mock_embedding,
+    process_component,
 )
 
 

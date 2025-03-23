@@ -1,21 +1,22 @@
 #!/usr/bin/env python3
+import hashlib
 import os
 import time
-import hashlib
-import numpy as np
-import chromadb
-from chromadb.config import Settings
-from openai import OpenAI
-from dotenv import load_dotenv
-from typing import List, Optional, Dict, Any
-from fastapi import FastAPI, HTTPException, Depends, Request, status
-from fastapi.responses import JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
 import traceback
+from typing import Any, Dict, List, Optional
+
+import chromadb
+import numpy as np
+from chromadb.config import Settings
+from dotenv import load_dotenv
+from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from openai import OpenAI
+from pydantic import BaseModel, Field
 
 # Import custom logger
-from logger import get_logger, LoggerMiddleware
+from logger import LoggerMiddleware, get_logger
 
 # Load environment variables from .env file
 load_dotenv()

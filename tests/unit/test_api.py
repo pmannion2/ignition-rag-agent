@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
-import os
 import json
-import unittest
-from unittest.mock import patch, MagicMock
+import os
 import sys
+import unittest
+from unittest.mock import MagicMock, patch
+
 from fastapi.testclient import TestClient
 
 # Add parent directory to path to import api
 sys.path.append(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 )
-from api import app, collection, MOCK_EMBEDDINGS, mock_embedding
+from api import MOCK_EMBEDDINGS, app, collection, mock_embedding
+
+# Set mock mode for testing
+os.environ["MOCK_EMBEDDINGS"] = "true"
 
 
 class TestAPI(unittest.TestCase):
@@ -54,7 +58,9 @@ class TestAPI(unittest.TestCase):
         mock_collection.query.return_value = self.mock_query_response
 
         # Test the endpoint
-        response = self.client.post("/query", json={"query": "Tank Level", "top_k": 2})
+        response = self.client.post(
+            "/query", json={"query": "Tank Level", "top_k": 2, "use_mock": True}
+        )
 
         # Validate response
         self.assertEqual(response.status_code, 200)
@@ -88,6 +94,7 @@ class TestAPI(unittest.TestCase):
                 "top_k": 2,
                 "filter_type": "tag",
                 "filter_path": "tags",
+                "use_mock": True,
             },
         )
 
@@ -115,6 +122,7 @@ class TestAPI(unittest.TestCase):
                 "query": "Tank Level",
                 "top_k": 2,
                 "context": {"current_file": "views/tank_view.json"},
+                "use_mock": True,
             },
         )
 

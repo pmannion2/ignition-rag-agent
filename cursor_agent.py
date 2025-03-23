@@ -6,12 +6,14 @@ This module provides functions that can be used by Cursor's Agent mode to
 retrieve context from the Ignition RAG system when generating code or answering questions.
 """
 
-import os
 import json
-import requests
 import logging
-from typing import List, Dict, Any, Optional, Union
+import os
+from typing import Any, Dict, List, Optional, Union
+
+import requests
 from dotenv import load_dotenv
+
 from logger import get_logger
 
 # Load environment variables

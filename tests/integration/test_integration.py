@@ -1,22 +1,24 @@
 #!/usr/bin/env python3
-import os
 import json
-import unittest
-import tempfile
+import os
 import shutil
-import sys
 import subprocess
+import sys
+import tempfile
 import time
-import requests
+import unittest
 from unittest.mock import patch
+
+import requests
 
 # Add parent directory to path
 sys.path.append(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 )
-import indexer
-from api import app, MOCK_EMBEDDINGS, mock_embedding
 from fastapi.testclient import TestClient
+
+import indexer
+from api import MOCK_EMBEDDINGS, app, mock_embedding
 
 
 class TestIntegration(unittest.TestCase):

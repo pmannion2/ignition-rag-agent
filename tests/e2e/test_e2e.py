@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-import os
-import requests
-import pytest
-import sys
 import json
+import os
+import sys
+
+import pytest
+import requests
 
 # Add parent directory to path
 sys.path.append(
