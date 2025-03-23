@@ -6,19 +6,19 @@ This script adds some sample data to the Chroma database for testing.
 Run it after starting the Chroma service to have some data to query.
 """
 
+import hashlib
+import json
 import os
 import sys
-import json
-import hashlib
-import numpy as np
 import time
-import requests
 from datetime import datetime
-from dotenv import load_dotenv
 
 # Use the Chroma client directly
 import chromadb
+import numpy as np
+import requests
 from chromadb.config import Settings
+from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
