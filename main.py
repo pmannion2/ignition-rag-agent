@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
-import os
 import json
+import os
 import time
-import typer
 from pathlib import Path
-from typing import Optional
 
 import chromadb
 import openai
-import tiktoken
+import typer
 from dotenv import load_dotenv
-from indexer import create_chunks, enc, MAX_TOKENS
+
+from indexer import create_chunks, enc
 
 # Load environment variables
 load_dotenv()
@@ -67,16 +66,19 @@ def main(
     # Process each file
     doc_count = 0
     chunk_count = 0
+    total_files = len(json_files)
+    start_time = time.time()
 
     # Rate limiting variables
     tokens_in_minute = 0
     minute_start = time.time()
-    MAX_TOKENS_PER_MINUTE = 80000  # Conservative limit below OpenAI's 100K TPM
+    max_tokens_per_minute = 80000  # Conservative limit below OpenAI's 100K TPM
 
-    for file_path in json_files:
+    for file_index, file_path in enumerate(json_files):
+        file_start_time = time.time()
         try:
-            print(f"Processing {file_path}...")
-            with open(file_path, "r", encoding="utf-8") as f:
+            print(f"Processing {file_path}... [{file_index+1}/{total_files}]")
+            with open(file_path, encoding="utf-8") as f:
                 content = f.read()
 
             # Skip empty files
@@ -103,7 +105,7 @@ def main(
                 # Check rate limits
                 if (
                     not skip_rate_limiting
-                    and tokens_in_minute + token_count > MAX_TOKENS_PER_MINUTE
+                    and tokens_in_minute + token_count > max_tokens_per_minute
                 ):
                     # Wait until the minute is up
                     elapsed = time.time() - minute_start
@@ -256,15 +258,21 @@ def main(
                     print(f"Created {len(chunks)} chunks for {file_path}")
 
                     # Process each chunk with rate limiting
+                    chunk_successes = 0
                     for i, (chunk_text, chunk_meta) in enumerate(chunks):
                         try:
+                            # Show progress for every chunk to better track processing
+                            print(
+                                f"  Processing chunk {i+1}/{len(chunks)} for {os.path.basename(file_path)} (total chunks so far: {chunk_count})"
+                            )
+
                             # Verify chunk size isn't too large
                             chunk_token_count = len(enc.encode(chunk_text))
 
                             # Skip chunks that are still too large
                             if chunk_token_count > 8000:
                                 print(
-                                    f"Warning: Chunk {i} is too large ({chunk_token_count} tokens). Skipping."
+                                    f"  Warning: Chunk {i+1} is too large ({chunk_token_count} tokens). Skipping."
                                 )
                                 continue
 
@@ -272,13 +280,13 @@ def main(
                             if (
                                 not skip_rate_limiting
                                 and tokens_in_minute + chunk_token_count
-                                > MAX_TOKENS_PER_MINUTE
+                                > max_tokens_per_minute
                             ):
                                 elapsed = time.time() - minute_start
                                 if elapsed < 60:
                                     sleep_time = 60 - elapsed
                                     print(
-                                        f"Rate limit approaching. Sleeping for {sleep_time:.1f} seconds..."
+                                        f"  Rate limit approaching. Sleeping for {sleep_time:.1f} seconds..."
                                     )
                                     time.sleep(sleep_time)
                                 # Reset rate limit counter
@@ -306,20 +314,17 @@ def main(
                                 metadatas=[chunk_meta],
                             )
                             chunk_count += 1
-
-                            # No delay between chunks for faster processing
-                            if (
-                                not skip_rate_limiting and i > 0 and i % 20 == 0
-                            ):  # Changed from 10 to 20
-                                print(
-                                    f"Processed {i}/{len(chunks)} chunks for {file_path}"
-                                )
+                            chunk_successes += 1
 
                         except Exception as e:
-                            print(f"Error processing chunk {i} of {file_path}: {e}")
+                            print(f"  Error processing chunk {i+1} of {file_path}: {e}")
 
+                    # Show file summary and timings
+                    file_time = time.time() - file_start_time
+                    print(
+                        f"Indexed {chunk_successes}/{len(chunks)} chunks from {file_path} in {file_time:.1f} seconds"
+                    )
                     doc_count += 1
-                    print(f"Indexed {len(chunks)} chunks from {file_path}")
 
                 except json.JSONDecodeError:
                     print(f"Error parsing JSON content for {file_path}, skipping")
@@ -333,6 +338,17 @@ def main(
     )
     print(f"Total files indexed: {doc_count}")
     print(f"Total chunks indexed: {chunk_count}")
+
+    # Calculate and print timing information
+    total_time = time.time() - start_time
+    chunks_per_second = chunk_count / total_time if total_time > 0 else 0
+    print(
+        f"Total processing time: {total_time:.1f} seconds ({total_time/60:.1f} minutes)"
+    )
+    print(f"Average speed: {chunks_per_second:.2f} chunks per second")
+
+    if chunk_count > 0 and doc_count > 0:
+        print(f"Average chunks per file: {chunk_count/doc_count:.1f}")
 
     # Test a simple query
     if chunk_count > 0:

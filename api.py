@@ -229,11 +229,11 @@ async def verify_dependencies():
     try:
         collection = get_collection()
         if collection:
-            count = collection.count()
+            _ = collection.count()
         else:
             errors.append("Could not connect to Chroma collection")
     except Exception as e:
-        errors.append(f"Chroma connection error: {str(e)}")
+        errors.append(f"Chroma connection error: {e!s}")
 
     if errors:
         logger.error(f"Dependency check failed: {', '.join(errors)}")
@@ -363,7 +363,7 @@ async def query(request: QueryRequest):
     except Exception as e:
         logger.error(f"Error in query endpoint: {e}")
         logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 # Agent-optimized query for Cursor integration
@@ -459,8 +459,8 @@ async def agent_query(
             else:
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail=f"Error generating embedding: {str(e)}",
-                )
+                    detail=f"Error generating embedding: {e!s}",
+                ) from e
 
         # Perform similarity search in Chroma
         try:
@@ -475,8 +475,8 @@ async def agent_query(
             logger.error(f"Error querying vector database: {e}", exc_info=True)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Error querying vector database: {str(e)}",
-            )
+                detail=f"Error querying vector database: {e!s}",
+            ) from e
 
         # Format results for agent consumption
         context_chunks = []
@@ -494,9 +494,8 @@ async def agent_query(
                 if chunk_type == "perspective":
                     if "component" in meta:
                         source_info += f" - Component: {meta['component']}"
-                elif chunk_type == "tag":
-                    if "folder" in meta:
-                        source_info += f" - Folder: {meta['folder']}"
+                elif chunk_type == "tag" and "folder" in meta:
+                    source_info += f" - Folder: {meta['folder']}"
 
                 context_chunks.append(
                     {
@@ -537,11 +536,11 @@ async def agent_query(
         # Re-raise HTTP exceptions to preserve status code
         raise
     except Exception as e:
-        error_msg = f"Error processing agent query: {str(e)}"
+        error_msg = f"Error processing agent query: {e!s}"
         logger.error(error_msg, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=error_msg
-        )
+        ) from e
 
 
 @app.get("/stats")
@@ -566,8 +565,8 @@ async def get_stats():
             logger.error(f"Error counting documents: {e}", exc_info=True)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Error counting documents: {str(e)}",
-            )
+                detail=f"Error counting documents: {e!s}",
+            ) from e
 
         # Get some stats about document types if any documents exist
         type_stats = {}
@@ -579,8 +578,8 @@ async def get_stats():
                 logger.error(f"Error getting sample documents: {e}", exc_info=True)
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=f"Error getting sample documents: {str(e)}",
-                )
+                    detail=f"Error getting sample documents: {e!s}",
+                ) from e
 
             # Count documents by type
             for meta in sample["metadatas"]:
@@ -603,11 +602,11 @@ async def get_stats():
         # Re-raise HTTP exceptions to preserve status code
         raise
     except Exception as e:
-        error_msg = f"Error getting stats: {str(e)}"
+        error_msg = f"Error getting stats: {e!s}"
         logger.error(error_msg, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=error_msg
-        )
+        ) from e
 
 
 if __name__ == "__main__":

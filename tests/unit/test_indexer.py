@@ -5,20 +5,19 @@ import shutil
 import sys
 import tempfile
 import unittest
-from unittest.mock import MagicMock, patch
+
+import pytest
 
 # Add parent directory to path to import indexer
 sys.path.append(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 )
 from indexer import (
-    MOCK_EMBEDDINGS,
     chunk_perspective_view,
     chunk_tag_config,
     create_chunks,
     find_json_files,
     load_json_files,
-    mock_embedding,
     process_component,
 )
 
@@ -33,10 +32,10 @@ class TestIndexer(unittest.TestCase):
         self.data_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
 
         # Load sample data
-        with open(os.path.join(self.data_dir, "sample_view.json"), "r") as f:
+        with open(os.path.join(self.data_dir, "sample_view.json")) as f:
             self.sample_view = json.load(f)
 
-        with open(os.path.join(self.data_dir, "sample_tags.json"), "r") as f:
+        with open(os.path.join(self.data_dir, "sample_tags.json")) as f:
             self.sample_tags = json.load(f)
 
     def tearDown(self):
@@ -70,10 +69,10 @@ class TestIndexer(unittest.TestCase):
         json_files = find_json_files(self.test_dir)
 
         # Should find the view and tag JSON files
-        self.assertEqual(len(json_files), 2)
-        self.assertIn(view_file, json_files)
-        self.assertIn(tag_file, json_files)
-        self.assertNotIn(other_file, json_files)  # Should not include other JSON files
+        assert len(json_files) == 2
+        assert view_file in json_files
+        assert tag_file in json_files
+        assert other_file not in json_files  # Should not include other JSON files
 
     def test_load_json_files(self):
         """Test loading JSON files with metadata."""
@@ -96,7 +95,7 @@ class TestIndexer(unittest.TestCase):
         documents = load_json_files([view_file, tag_file])
 
         # Should have loaded both files with correct metadata
-        self.assertEqual(len(documents), 2)
+        assert len(documents) == 2
 
         view_doc = next(
             (doc for doc in documents if doc["metadata"]["filepath"] == view_file), None
@@ -105,14 +104,14 @@ class TestIndexer(unittest.TestCase):
             (doc for doc in documents if doc["metadata"]["filepath"] == tag_file), None
         )
 
-        self.assertIsNotNone(view_doc)
-        self.assertIsNotNone(tag_doc)
+        assert view_doc is not None
+        assert tag_doc is not None
 
-        self.assertEqual(view_doc["metadata"]["type"], "perspective")
-        self.assertEqual(tag_doc["metadata"]["type"], "tag")
+        assert view_doc["metadata"]["type"] == "perspective"
+        assert tag_doc["metadata"]["type"] == "tag"
 
-        self.assertEqual(view_doc["content"]["test"], "view")
-        self.assertEqual(tag_doc["content"]["test"], "tag")
+        assert view_doc["content"]["test"] == "view"
+        assert tag_doc["content"]["test"] == "tag"
 
     def test_chunk_perspective_view(self):
         """Test chunking a Perspective view."""
@@ -141,26 +140,26 @@ class TestIndexer(unittest.TestCase):
         chunks = chunk_perspective_view(self.sample_view, view_meta)
 
         # Should have created chunks for the view
-        self.assertGreater(len(chunks), 0)
+        assert len(chunks) > 0
 
         # Check that params are included
         params_chunk = next(
             (chunk for chunk in chunks if chunk[1].get("section") == "params"), None
         )
-        self.assertIsNotNone(params_chunk)
+        assert params_chunk is not None
 
         # Check that a component is included
         component_chunk = next(
             (chunk for chunk in chunks if "component" in chunk[1]), None
         )
-        self.assertIsNotNone(component_chunk)
+        assert component_chunk is not None
 
         # Verify chunk contents are JSON strings
         for chunk, _ in chunks:
             try:
                 json.loads(chunk)
             except json.JSONDecodeError:
-                self.fail("Chunk is not valid JSON")
+                pytest.fail("Chunk is not valid JSON")
 
     def test_chunk_tag_config(self):
         """Test chunking a Tag configuration."""
@@ -173,7 +172,7 @@ class TestIndexer(unittest.TestCase):
         chunks = chunk_tag_config(self.sample_tags, tag_meta)
 
         # Should have created chunks for the tags
-        self.assertGreater(len(chunks), 0)
+        assert len(chunks) > 0
 
         # Verify chunk contents
         for chunk, metadata in chunks:
@@ -182,14 +181,14 @@ class TestIndexer(unittest.TestCase):
                 # Each chunk should be a list of tags or a single tag
                 if isinstance(parsed, list):
                     for tag in parsed:
-                        self.assertIn("name", tag)
+                        assert "name" in tag
                 else:
-                    self.assertIn("name", parsed)
+                    assert "name" in parsed
             except json.JSONDecodeError:
-                self.fail("Chunk is not valid JSON")
+                pytest.fail("Chunk is not valid JSON")
 
             # Check that folder information is included
-            self.assertIn("folder", metadata)
+            assert "folder" in metadata
 
     def test_create_chunks(self):
         """Test the create_chunks function that handles different document types."""
@@ -215,7 +214,7 @@ class TestIndexer(unittest.TestCase):
         all_chunks = create_chunks(documents)
 
         # Should have created chunks for both documents
-        self.assertGreater(len(all_chunks), 0)
+        assert len(all_chunks) > 0
 
         # Check that we have both types of chunks
         perspective_chunks = [
@@ -223,8 +222,8 @@ class TestIndexer(unittest.TestCase):
         ]
         tag_chunks = [chunk for chunk in all_chunks if chunk[1]["type"] == "tag"]
 
-        self.assertGreater(len(perspective_chunks), 0)
-        self.assertGreater(len(tag_chunks), 0)
+        assert len(perspective_chunks) > 0
+        assert len(tag_chunks) > 0
 
     def test_process_component(self):
         """Test processing a component and its children."""
@@ -240,13 +239,13 @@ class TestIndexer(unittest.TestCase):
         process_component(component, view_meta, chunks)
 
         # Should have created chunks for the component and its children
-        self.assertGreater(len(chunks), 0)
+        assert len(chunks) > 0
 
         # Check that component metadata is correct
         for _, metadata in chunks:
-            self.assertEqual(metadata["type"], "perspective")
-            self.assertIn("component", metadata)
-            self.assertIn("path", metadata)
+            assert metadata["type"] == "perspective"
+            assert "component" in metadata
+            assert "path" in metadata
 
 
 if __name__ == "__main__":

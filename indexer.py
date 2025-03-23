@@ -5,14 +5,12 @@ import os
 import pickle
 import time
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import chromadb
 import numpy as np
 import tiktoken
 import typer
-from chromadb.config import Settings
 from dotenv import load_dotenv
 from openai import OpenAI
 
@@ -145,7 +143,7 @@ def load_json_files(file_paths: List[str]) -> List[Dict[str, Any]]:
     documents = []
     for fpath in file_paths:
         try:
-            with open(fpath, "r", encoding="utf-8") as f:
+            with open(fpath, encoding="utf-8") as f:
                 data = json.load(f)
 
             # Determine metadata based on file path and content
@@ -223,7 +221,7 @@ def process_component(comp, view_meta, chunks, parent_path=""):
         chunks.append((comp_json_str, comp_meta))
     else:
         # If too large, split it
-        if "children" in comp and comp["children"]:
+        if comp.get("children"):
             # Process children separately
             for child in comp["children"]:
                 process_component(child, view_meta, chunks, current_path)

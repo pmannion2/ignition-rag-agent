@@ -29,7 +29,32 @@ markers = [
 ]
 
 [tool.ruff]
+# Enable Pyflakes (`F`), pycodestyle (`E`), isort (`I`), and more
+lint.select = ["E", "F", "I", "N", "W", "B", "A", "C4", "PT", "RUF", "SIM", "TCH", "UP"]
 line-length = 100
+target-version = "py38"
+# Exclude common directories for generated files
+exclude = [
+    ".git",
+    ".venv",
+    "__pycache__",
+    "chroma_index",
+    ".pytest_cache",
+]
+# Allow autofix for all enabled rules (when `--fix` is used)
+lint.fixable = ["ALL"]
+# Allow unused variables when underscore-prefixed
+lint.ignore = ["E501"]  # Line too long (handled by formatter)
+
+# Configure isort rules for Ruff
+lint.isort.known-first-party = ["api", "indexer", "logger", "watcher", "cursor_agent"]
+
+# Configure formatter options
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
+skip-magic-trailing-comma = false
 
 [tool.isort]
 profile = "black"

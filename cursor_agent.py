@@ -7,9 +7,8 @@ retrieve context from the Ignition RAG system when generating code or answering 
 """
 
 import json
-import logging
 import os
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
 import requests
 from dotenv import load_dotenv

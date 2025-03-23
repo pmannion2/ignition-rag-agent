@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
 import json
 import os
-import shutil
 import sys
-import tempfile
 
-import pytest
 import requests
 
 # Add parent directory to path

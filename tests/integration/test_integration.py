@@ -2,14 +2,10 @@
 import json
 import os
 import shutil
-import subprocess
 import sys
 import tempfile
-import time
 import unittest
 from unittest.mock import patch
-
-import requests
 
 # Add parent directory to path
 sys.path.append(
@@ -18,7 +14,7 @@ sys.path.append(
 from fastapi.testclient import TestClient
 
 import indexer
-from api import MOCK_EMBEDDINGS, app, mock_embedding
+from api import app
 
 
 class TestIntegration(unittest.TestCase):
@@ -91,7 +87,7 @@ class TestIntegration(unittest.TestCase):
 
             # Find JSON files
             json_files = indexer.find_json_files(self.project_dir)
-            self.assertEqual(len(json_files), 2)
+            assert len(json_files) == 2
 
             # Load and chunk the files
             documents = indexer.load_json_files(json_files)
@@ -101,7 +97,7 @@ class TestIntegration(unittest.TestCase):
             indexer.index_documents(chunks, collection, rebuild=True)
 
             # Verify chunks were indexed
-            self.assertGreater(collection.count(), 0)
+            assert collection.count() > 0
 
             # Step 2: Test the API with indexed data
             # Patch the API to use our existing collection
@@ -110,21 +106,21 @@ class TestIntegration(unittest.TestCase):
                 response = self.client.post(
                     "/query", json={"query": "Tank Level", "top_k": 2}
                 )
-                self.assertEqual(response.status_code, 200)
+                assert response.status_code == 200
                 query_data = response.json()
-                self.assertIn("results", query_data)
-                self.assertIn("metadata", query_data)
-                self.assertIn("total_chunks", query_data["metadata"])
+                assert "results" in query_data
+                assert "metadata" in query_data
+                assert "total_chunks" in query_data["metadata"]
 
                 # Test agent query endpoint
                 response = self.client.post(
                     "/agent/query",
                     json={"query": "How is the Tank Level configured?", "top_k": 2},
                 )
-                self.assertEqual(response.status_code, 200)
+                assert response.status_code == 200
                 agent_data = response.json()
-                self.assertIn("context_chunks", agent_data)
-                self.assertIn("suggested_prompt", agent_data)
+                assert "context_chunks" in agent_data
+                assert "suggested_prompt" in agent_data
 
     @patch("indexer.mock_embedding", return_value=[0.1] * 1536)
     def test_incremental_indexing(self, mock_embedding_fn):
@@ -185,7 +181,7 @@ class TestIntegration(unittest.TestCase):
 
             # Verify the document count increased
             final_count = collection.count()
-            self.assertGreater(final_count, initial_count)
+            assert final_count > initial_count
 
     @patch("api.mock_embedding", return_value=[0.1] * 1536)
     def test_cursor_agent_integration(self, mock_embedding_fn):
@@ -207,22 +203,22 @@ class TestIntegration(unittest.TestCase):
         )
 
         # Verify we got a suggested prompt with mock data
-        self.assertTrue("mock" in context.lower())
+        assert "mock" in context.lower()
 
         # Test the get_ignition_tag_info function
         tag_info = cursor_agent.get_ignition_tag_info("Tank1/Level")
 
         # Verify we got mock tag data
-        self.assertEqual(tag_info["name"], "Tank1/Level")
-        self.assertEqual(tag_info["value"], 42.0)
-        self.assertTrue(tag_info["mock_used"])
+        assert tag_info["name"] == "Tank1/Level"
+        assert tag_info["value"] == 42.0
+        assert tag_info["mock_used"]
 
         # Test the get_ignition_view_component function
         view_info = cursor_agent.get_ignition_view_component("Main")
 
         # Verify we got mock view data
-        self.assertEqual(view_info["name"], "Main")
-        self.assertTrue(view_info["mock_used"])
+        assert view_info["name"] == "Main"
+        assert view_info["mock_used"]
 
 
 if __name__ == "__main__":

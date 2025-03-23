@@ -7,10 +7,8 @@ Run it after starting the Chroma service to have some data to query.
 """
 
 import hashlib
-import json
 import os
 import sys
-import time
 from datetime import datetime
 
 # Use the Chroma client directly

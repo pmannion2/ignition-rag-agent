@@ -279,4 +279,33 @@ def mock_embedding(text):
     return [0.1] * 1536  # Same dimensionality as OpenAI's text-embedding-ada-002
 ```
 
-When running the test suite with `run_tests.sh`, mock embeddings are enabled by default. 
+When running the test suite with `run_tests.sh`, mock embeddings are enabled by default.
+
+## 🧪 Development
+
+### Code Linting with Ruff
+
+This project uses [Ruff](https://github.com/astral-sh/ruff) for fast Python linting and formatting.
+
+1. Run the linter:
+   ```bash
+   ./run_lint.sh
+   ```
+   
+   Or directly with Ruff:
+   ```bash
+   # Check code for issues
+   ruff check .
+   
+   # Auto-fix issues where possible
+   ruff check --fix .
+   
+   # Check formatting
+   ruff format --check .
+   
+   # Format code
+   ruff format .
+   ```
+
+2. Pre-commit Hook
+   A pre-commit hook is installed to automatically check your code when committing. You can bypass it with `git commit --no-verify` if needed. 

@@ -9,7 +9,6 @@ It connects directly to the RAG API and can be used as a standalone script or im
 import argparse
 import json
 import os
-import sys
 
 import requests
 from dotenv import load_dotenv
@@ -77,7 +76,7 @@ def get_rag_context(query, current_file=None, top_k=3, filter_type=None):
         return context_text
 
     except Exception as e:
-        return f"Error retrieving context: {str(e)}"
+        return f"Error retrieving context: {e!s}"
 
 
 def cursor_integration(query, current_file=None):

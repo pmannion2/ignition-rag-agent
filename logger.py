@@ -70,6 +70,6 @@ class LoggerMiddleware:
             self.logger.info(f"Response {request_id}: {method} {path} completed")
         except Exception as e:
             self.logger.error(
-                f"Error {request_id}: {method} {path} - {str(e)}", exc_info=True
+                f"Error {request_id}: {method} {path} - {e!s}", exc_info=True
             )
             raise

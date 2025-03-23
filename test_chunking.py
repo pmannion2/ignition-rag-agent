@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-import os
 import json
+import os
+
 import tiktoken
-from pathlib import Path
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -73,7 +73,7 @@ def process_large_file(file_path):
     print(f"Testing chunking on {file_path}")
 
     try:
-        with open(file_path, "r", encoding="utf-8") as f:
+        with open(file_path, encoding="utf-8") as f:
             content = f.read()
 
         # Count tokens in the file

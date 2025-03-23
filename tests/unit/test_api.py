@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-import json
 import os
 import sys
 import unittest
 from unittest.mock import MagicMock, patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 # Add parent directory to path to import api
@@ -14,214 +14,199 @@ sys.path.append(
 
 # Import after path setup
 import api
-from api import app, get_collection, mock_embedding
+from api import app
+
+# Test client
+client = TestClient(app)
 
 
-class TestAPI(unittest.TestCase):
-    """Test cases for the API endpoints."""
+@pytest.fixture
+def mock_collection():
+    """Mock collection for testing."""
+    mock = MagicMock()
+    mock.count.return_value = 2
+    return mock
 
-    mock_patches = []
 
-    @classmethod
-    def setUpClass(cls):
-        """Set up test class with patches."""
-        # Apply mock patches at class level
-        cls.mock_embeddings_patch = patch.object(api, "MOCK_EMBEDDINGS", True)
-        cls.mock_embeddings_patch.start()
-        cls.mock_patches.append(cls.mock_embeddings_patch)
+# Apply mock patches at module level for all tests
+@pytest.fixture(autouse=True, scope="module")
+def mock_dependencies():
+    """Mock API dependencies for all tests."""
+    # Apply mock patches at module level
+    with patch.object(api, "MOCK_EMBEDDINGS", True), patch.object(
+        api, "verify_dependencies", return_value=None
+    ), patch("api.get_collection"), patch("api.mock_embedding"), patch(
+        "api.openai_client"
+    ):
+        yield
 
-        # Directly patch the verify_dependencies function to do nothing
-        # This ensures tests aren't affected by dependency checks
-        async def mock_verify_dependencies():
-            pass
 
-        cls.verify_dependencies_patch = patch.object(
-            api, "verify_dependencies", mock_verify_dependencies
-        )
-        cls.verify_dependencies_patch.start()
-        cls.mock_patches.append(cls.verify_dependencies_patch)
-
-    @classmethod
-    def tearDownClass(cls):
-        """Clean up patches."""
-        # Stop all patches
-        for mock_patch in cls.mock_patches:
-            mock_patch.stop()
-
-    def setUp(self):
-        """Set up test environment."""
-        self.client = TestClient(app)
-
-        # Mock collection.query response
-        self.mock_query_response = {
-            "ids": [["sample-1", "sample-2"]],
-            "documents": [
-                [
-                    '{"name": "Tank1/Level", "value": 75.5}',
-                    '{"type": "gauge", "name": "TankLevelGauge"}',
-                ]
-            ],
-            "metadatas": [
-                [
-                    {
-                        "type": "tag",
-                        "filepath": "tags/sample_tags.json",
-                        "folder": "Tanks",
-                    },
-                    {
-                        "type": "perspective",
-                        "filepath": "views/sample_view.json",
-                        "component": "TankLevelGauge",
-                    },
-                ]
-            ],
-            "distances": [[0.1, 0.2]],
-        }
-
-    @patch("api.get_collection")
-    @patch("api.mock_embedding", return_value=[0.1] * 1536)
-    def test_query_endpoint(self, mock_embedding_fn, mock_get_collection):
-        """Test the /query endpoint."""
-        # Create mock collection
-        mock_collection = MagicMock()
-        mock_collection.query.return_value = self.mock_query_response
-        mock_collection.count.return_value = 2
-        # Setup the get_collection function to return our mock
-        mock_get_collection.return_value = mock_collection
-
-        # Test the endpoint
-        response = self.client.post(
-            "/query", json={"query": "Tank Level", "top_k": 2, "use_mock": True}
-        )
+def test_health_check(mock_collection):
+    """Test the /health endpoint."""
+    # Setup mock collection
+    with patch("api.get_collection", return_value=mock_collection):
+        # Call the API
+        response = client.get("/health")
 
         # Validate response
-        self.assertEqual(response.status_code, 200)
+        assert response.status_code == 200
         data = response.json()
 
-        self.assertIn("results", data)
-        self.assertEqual(len(data["results"]), 2)
-        self.assertIn("metadata", data)
-        self.assertEqual(data["metadata"]["total_chunks"], 2)
+        assert data["status"] == "healthy"
+        assert data["chroma"]["connected"] is True
+        assert data["chroma"]["documents"] == 2
+
+
+def test_query():
+    """Test the /query endpoint."""
+    # Setup mock collection and response
+    mock_collection = MagicMock()
+
+    # Configure the mock collection to return test results
+    mock_collection.query.return_value = {
+        "ids": [["id1", "id2"]],
+        "distances": [[0.1, 0.2]],
+        "metadatas": [[{"type": "perspective"}, {"type": "tag"}]],
+        "documents": [["doc1 content", "doc2 content"]],
+    }
+
+    # Call the API
+    with patch("api.get_collection", return_value=mock_collection):
+        response = client.post("/query", json={"query": "Test query", "top_k": 2})
+
+        # Validate response
+        assert response.status_code == 200
+        data = response.json()
+
+        assert "results" in data
+        assert len(data["results"]) == 2
+        assert "metadata" in data
+        assert data["metadata"]["total_chunks"] == 2
 
         # Check that results have the expected structure
         result = data["results"][0]
-        self.assertIn("content", result)
-        self.assertIn("metadata", result)
-        self.assertIn("similarity", result)
+        assert "content" in result
+        assert "metadata" in result
+        assert "similarity" in result
 
         # Verify collection.query was called with the embedding
         mock_collection.query.assert_called_once()
 
-    @patch("api.get_collection")
-    @patch("api.mock_embedding", return_value=[0.1] * 1536)
-    def test_query_with_filter(self, mock_embedding_fn, mock_get_collection):
-        """Test the /query endpoint with filters."""
-        # Create mock collection
-        mock_collection = MagicMock()
-        mock_collection.query.return_value = self.mock_query_response
-        mock_collection.count.return_value = 2
-        # Setup the get_collection function to return our mock
-        mock_get_collection.return_value = mock_collection
 
-        # Test the endpoint with type filter
-        response = self.client.post(
+def test_query_filter():
+    """Test the /query endpoint with filters."""
+    # Setup mock collection
+    mock_collection = MagicMock()
+
+    # Configure the mock collection response
+    mock_collection.query.return_value = {
+        "ids": [["id1"]],
+        "distances": [[0.1]],
+        "metadatas": [[{"type": "tag"}]],
+        "documents": [["doc content"]],
+    }
+
+    # Call the API with filter
+    with patch("api.get_collection", return_value=mock_collection):
+        response = client.post(
             "/query",
             json={
-                "query": "Tank Level",
-                "top_k": 2,
+                "query": "Test query",
+                "top_k": 1,
                 "filter_metadata": {"type": "tag", "filepath": {"$contains": "tags"}},
-                "use_mock": True,
             },
         )
 
         # Validate response
-        self.assertEqual(response.status_code, 200)
+        assert response.status_code == 200
 
         # Verify collection.query was called with the filter
         mock_collection.query.assert_called_once()
         args, kwargs = mock_collection.query.call_args
-        self.assertIn("where", kwargs)
-        self.assertEqual(kwargs["where"]["type"], "tag")
-        self.assertEqual(kwargs["where"]["filepath"]["$contains"], "tags")
+        assert "where" in kwargs
+        assert kwargs["where"]["type"] == "tag"
+        assert kwargs["where"]["filepath"]["$contains"] == "tags"
 
-    @patch("api.get_collection")
-    @patch("api.mock_embedding", return_value=[0.1] * 1536)
-    def test_agent_query_endpoint(self, mock_embedding_fn, mock_get_collection):
-        """Test the /agent/query endpoint."""
-        # Create mock collection
-        mock_collection = MagicMock()
-        mock_collection.query.return_value = self.mock_query_response
-        # Setup the get_collection function to return our mock
-        mock_get_collection.return_value = mock_collection
 
-        # Test the endpoint
-        response = self.client.post(
+def test_agent_query():
+    """Test the /agent/query endpoint."""
+    # Setup mock collection
+    mock_collection = MagicMock()
+
+    # Configure the mock collection to return test results
+    mock_collection.query.return_value = {
+        "ids": [["id1", "id2"]],
+        "distances": [[0.1, 0.2]],
+        "metadatas": [[{"type": "perspective"}, {"type": "tag"}]],
+        "documents": [["doc1 content", "doc2 content"]],
+    }
+
+    # Call the API
+    with patch("api.get_collection", return_value=mock_collection):
+        response = client.post(
             "/agent/query",
-            json={
-                "query": "Tank Level",
-                "top_k": 2,
-                "context": {"current_file": "views/tank_view.json"},
-                "use_mock": True,
-            },
+            json={"query": "Test query", "top_k": 2, "filter_type": "perspective"},
         )
 
         # Validate response
-        self.assertEqual(response.status_code, 200)
+        assert response.status_code == 200
         data = response.json()
 
-        self.assertIn("context_chunks", data)
-        self.assertEqual(len(data["context_chunks"]), 2)
-        self.assertIn("suggested_prompt", data)
+        assert "context_chunks" in data
+        assert len(data["context_chunks"]) == 2
+        assert "suggested_prompt" in data
 
         # Check that context chunks have the expected structure
         chunk = data["context_chunks"][0]
-        self.assertIn("source", chunk)
-        self.assertIn("content", chunk)
-        self.assertIn("metadata", chunk)
-        self.assertIn("similarity", chunk)
+        assert "source" in chunk
+        assert "content" in chunk
+        assert "metadata" in chunk
+        assert "similarity" in chunk
 
-    def test_root_endpoint(self):
-        """Test the root endpoint."""
-        response = self.client.get("/")
 
-        self.assertEqual(response.status_code, 200)
-        data = response.json()
+def test_root_endpoint():
+    """Test the root endpoint."""
+    response = client.get("/")
 
-        self.assertIn("name", data)
-        self.assertIn("description", data)
-        self.assertIn("version", data)
-        self.assertIn("endpoints", data)
+    assert response.status_code == 200
+    data = response.json()
 
-    @patch("api.get_collection")
-    def test_stats_endpoint(self, mock_get_collection):
-        """Test the /stats endpoint."""
-        # Create mock collection
-        mock_collection = MagicMock()
-        mock_collection.count.return_value = 42
-        mock_collection.get.return_value = {
-            "metadatas": [
-                {"type": "perspective"},
-                {"type": "perspective"},
-                {"type": "tag"},
-            ]
-        }
-        # Setup the get_collection function to return our mock
-        mock_get_collection.return_value = mock_collection
+    assert "name" in data
+    assert "description" in data
+    assert "version" in data
+    assert "endpoints" in data
 
-        # Test the endpoint
-        response = self.client.get("/stats")
+
+def test_stats():
+    """Test the /stats endpoint."""
+    # Setup mock collection
+    mock_collection = MagicMock()
+
+    # Configure mocks
+    mock_collection.count.return_value = 42
+    mock_collection.get.return_value = {
+        "metadatas": [
+            {"type": "perspective"},
+            {"type": "perspective"},
+            {"type": "tag"},
+        ]
+    }
+
+    # Call the API
+    with patch("api.get_collection", return_value=mock_collection):
+        response = client.get("/stats")
 
         # Validate response
-        self.assertEqual(response.status_code, 200)
+        assert response.status_code == 200
         data = response.json()
 
-        self.assertEqual(data["total_documents"], 42)
-        self.assertEqual(data["collection_name"], "ignition_project")
-        self.assertIn("type_distribution", data)
+        assert data["total_documents"] == 42
+        assert data["collection_name"] == "ignition_project"
+        assert "type_distribution" in data
 
         # Check the type distribution
-        self.assertEqual(data["type_distribution"]["perspective"], 2)
-        self.assertEqual(data["type_distribution"]["tag"], 1)
+        assert data["type_distribution"]["perspective"] == 2
+        assert data["type_distribution"]["tag"] == 1
 
 
 if __name__ == "__main__":
