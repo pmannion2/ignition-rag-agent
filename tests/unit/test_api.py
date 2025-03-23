@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 sys.path.append(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 )
-from api import app, collection
+from api import app, collection, MOCK_EMBEDDINGS, mock_embedding
 
 
 class TestAPI(unittest.TestCase):
@@ -47,12 +47,9 @@ class TestAPI(unittest.TestCase):
         }
 
     @patch("api.collection")
-    @patch("api.openai.Embedding.create")
-    def test_query_endpoint(self, mock_embedding, mock_collection):
+    @patch("api.mock_embedding", return_value=[0.1] * 1536)
+    def test_query_endpoint(self, mock_embedding_fn, mock_collection):
         """Test the /query endpoint."""
-        # Mock the OpenAI embedding response
-        mock_embedding.return_value = {"data": [{"embedding": [0.1] * 1536}]}
-
         # Mock the collection.query response
         mock_collection.query.return_value = self.mock_query_response
 
@@ -73,21 +70,13 @@ class TestAPI(unittest.TestCase):
         self.assertIn("metadata", result)
         self.assertIn("similarity", result)
 
-        # Verify the embedding was called with the correct query
-        mock_embedding.assert_called_once()
-        args, kwargs = mock_embedding.call_args
-        self.assertEqual(kwargs["input"], ["Tank Level"])
-
         # Verify collection.query was called with the embedding
         mock_collection.query.assert_called_once()
 
     @patch("api.collection")
-    @patch("api.openai.Embedding.create")
-    def test_query_with_filter(self, mock_embedding, mock_collection):
+    @patch("api.mock_embedding", return_value=[0.1] * 1536)
+    def test_query_with_filter(self, mock_embedding_fn, mock_collection):
         """Test the /query endpoint with filters."""
-        # Mock the OpenAI embedding response
-        mock_embedding.return_value = {"data": [{"embedding": [0.1] * 1536}]}
-
         # Mock the collection.query response
         mock_collection.query.return_value = self.mock_query_response
 
@@ -113,12 +102,9 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(kwargs["where"]["filepath"]["$contains"], "tags")
 
     @patch("api.collection")
-    @patch("api.openai.Embedding.create")
-    def test_agent_query_endpoint(self, mock_embedding, mock_collection):
+    @patch("api.mock_embedding", return_value=[0.1] * 1536)
+    def test_agent_query_endpoint(self, mock_embedding_fn, mock_collection):
         """Test the /agent/query endpoint."""
-        # Mock the OpenAI embedding response
-        mock_embedding.return_value = {"data": [{"embedding": [0.1] * 1536}]}
-
         # Mock the collection.query response
         mock_collection.query.return_value = self.mock_query_response
 

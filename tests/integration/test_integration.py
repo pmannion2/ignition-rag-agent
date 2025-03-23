@@ -15,7 +15,7 @@ sys.path.append(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 )
 import indexer
-from api import app
+from api import app, MOCK_EMBEDDINGS, mock_embedding
 from fastapi.testclient import TestClient
 
 
@@ -51,7 +51,7 @@ class TestIntegration(unittest.TestCase):
         )
 
         # Mock environment variables for testing
-        os.environ["OPENAI_API_KEY"] = "test-api-key"
+        os.environ["MOCK_EMBEDDINGS"] = "true"
         os.environ["CHROMA_DB_PATH"] = cls.index_dir
 
         # Create a test client for the API
@@ -68,18 +68,10 @@ class TestIntegration(unittest.TestCase):
         if "CHROMA_DB_PATH" in os.environ:
             del os.environ["CHROMA_DB_PATH"]
 
-    @patch("indexer.openai.Embedding.create")
-    @patch("api.openai.Embedding.create")
+    @patch("indexer.mock_embedding", return_value=[0.1] * 1536)
+    @patch("api.mock_embedding", return_value=[0.1] * 1536)
     def test_full_pipeline(self, mock_api_embedding, mock_indexer_embedding):
         """Test the full indexing and querying pipeline."""
-        # Mock the OpenAI embedding responses
-        mock_indexer_embedding.return_value = {
-            "data": [
-                {"embedding": [0.1] * 1536} for _ in range(20)
-            ]  # Support batch size
-        }
-        mock_api_embedding.return_value = {"data": [{"embedding": [0.1] * 1536}]}
-
         # Step 1: Run the indexer on the test project
         with patch.object(indexer, "PERSIST_DIRECTORY", self.index_dir):
             client = indexer.setup_chroma_client()
@@ -111,11 +103,7 @@ class TestIntegration(unittest.TestCase):
         # Test agent query endpoint
         response = self.client.post(
             "/agent/query",
-            json={
-                "query": "How is the Tank Level configured?",
-                "top_k": 2,
-                "context": {"current_file": "views/tank_view.json"},
-            },
+            json={"query": "How is the Tank Level configured?", "top_k": 2},
         )
         self.assertEqual(response.status_code, 200)
         agent_data = response.json()
@@ -129,14 +117,9 @@ class TestIntegration(unittest.TestCase):
         self.assertIn("total_documents", stats_data)
         self.assertIn("type_distribution", stats_data)
 
-    @patch("indexer.openai.Embedding.create")
-    def test_incremental_indexing(self, mock_embedding):
+    @patch("indexer.mock_embedding", return_value=[0.1] * 1536)
+    def test_incremental_indexing(self, mock_embedding_fn):
         """Test incremental indexing when a file changes."""
-        # Mock the OpenAI embedding responses
-        mock_embedding.return_value = {
-            "data": [{"embedding": [0.1] * 1536} for _ in range(20)]
-        }
-
         # First indexing run
         with patch.object(indexer, "PERSIST_DIRECTORY", self.index_dir):
             client = indexer.setup_chroma_client()
@@ -151,32 +134,43 @@ class TestIntegration(unittest.TestCase):
             # Record the initial document count
             initial_count = collection.count()
 
-            # Modify a file
-            modified_tags_path = os.path.join(self.tags_dir, "tank_tags.json")
-            with open(modified_tags_path, "r") as f:
-                tags_data = json.load(f)
-
-            # Add a new tag
-            tags_data["tags"].append(
+            # Create a completely new tag file instead of modifying an existing one
+            new_tags_path = os.path.join(self.tags_dir, "new_tags.json")
+            new_tags_data = [
                 {
-                    "name": "Tank1/FlowRate",
+                    "name": "Tank2/Level",
                     "tagType": "AtomicTag",
                     "dataType": "Float8",
-                    "value": 42.0,
-                    "path": "Tanks/Tank1/FlowRate",
+                    "value": 55.5,
+                    "path": "Tanks/Tank2/Level",
                     "parameters": {
-                        "engUnit": "L/min",
-                        "description": "Flow rate through Tank 1",
+                        "engHigh": 100,
+                        "engLow": 0,
+                        "engUnit": "%",
+                        "description": "Current fill level of Tank 2",
                     },
-                }
-            )
+                },
+                {
+                    "name": "Tank2/Pressure",
+                    "tagType": "AtomicTag",
+                    "dataType": "Float8",
+                    "value": 1.75,
+                    "path": "Tanks/Tank2/Pressure",
+                    "parameters": {
+                        "engHigh": 5,
+                        "engLow": 0,
+                        "engUnit": "bar",
+                        "description": "Current pressure in Tank 2",
+                    },
+                },
+            ]
 
-            # Write the modified file
-            with open(modified_tags_path, "w") as f:
-                json.dump(tags_data, f)
+            # Write the new file
+            with open(new_tags_path, "w") as f:
+                json.dump(new_tags_data, f)
 
-            # Run incremental indexing on just the modified file
-            documents = indexer.load_json_files([modified_tags_path])
+            # Run incremental indexing on the new file
+            documents = indexer.load_json_files([new_tags_path])
             chunks = indexer.create_chunks(documents)
             indexer.index_documents(chunks, collection, rebuild=False)
 
@@ -184,12 +178,9 @@ class TestIntegration(unittest.TestCase):
             final_count = collection.count()
             self.assertGreater(final_count, initial_count)
 
-    @patch("indexer.openai.Embedding.create")
-    @patch("api.openai.Embedding.create")
+    @patch("api.mock_embedding", return_value=[0.1] * 1536)
     @patch("cursor_agent.query_rag")
-    def test_cursor_agent_integration(
-        self, mock_query_rag, mock_api_embedding, mock_indexer_embedding
-    ):
+    def test_cursor_agent_integration(self, mock_query_rag, mock_embedding_fn):
         """Test the Cursor agent integration."""
         # Import cursor_agent here to avoid affecting other tests
         sys.path.append(
@@ -208,6 +199,7 @@ class TestIntegration(unittest.TestCase):
                 }
             ],
             "suggested_prompt": "Query: Tank Level\n\nRelevant context...",
+            "mock_used": True,
         }
 
         # Test the get_cursor_context function
@@ -229,7 +221,8 @@ class TestIntegration(unittest.TestCase):
                     "metadata": {"type": "tag"},
                     "similarity": 0.1,
                 }
-            ]
+            ],
+            "mock_used": True,
         }
 
         tag_info = cursor_agent.get_ignition_tag_info("Tank1/Level")

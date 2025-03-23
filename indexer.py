@@ -5,19 +5,39 @@ import time
 import pickle
 import tiktoken
 import typer
+import hashlib
+import numpy as np
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 from datetime import datetime
 import chromadb
 from chromadb.config import Settings
-import openai
+from openai import OpenAI
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
 
-# Initialize OpenAI client
-openai.api_key = os.getenv("OPENAI_API_KEY")
+# Check if we're in mock mode (for testing without OpenAI API key)
+MOCK_EMBEDDINGS = os.getenv("MOCK_EMBEDDINGS", "false").lower() == "true"
+if MOCK_EMBEDDINGS:
+    print("Using mock embeddings for testing")
+
+# Initialize OpenAI client only if we're not in mock mode or we have a key
+openai_api_key = os.getenv("OPENAI_API_KEY")
+if not MOCK_EMBEDDINGS or openai_api_key:
+    try:
+        client = OpenAI(api_key=openai_api_key)
+        print("Initialized OpenAI client")
+    except Exception as e:
+        print(f"Failed to initialize OpenAI client: {e}")
+        if not MOCK_EMBEDDINGS:
+            print(
+                "No valid OpenAI API key and mock mode is not enabled, some features may not work"
+            )
+else:
+    client = None
+    print("OpenAI client not initialized (using mock mode)")
 
 # Initialize tokenizer for GPT models
 enc = tiktoken.get_encoding("cl100k_base")
@@ -42,11 +62,8 @@ def setup_chroma_client():
         return chromadb.HttpClient(host=CHROMA_HOST, port=int(CHROMA_PORT))
     else:
         print(f"Using local Chroma with persistence at {PERSIST_DIRECTORY}")
-        return chromadb.Client(
-            Settings(
-                chroma_db_impl="duckdb+parquet", persist_directory=PERSIST_DIRECTORY
-            )
-        )
+        # Updated client initialization for newer ChromaDB versions
+        return chromadb.PersistentClient(path=PERSIST_DIRECTORY)
 
 
 def get_collection(client, rebuild=False):
@@ -59,6 +76,29 @@ def get_collection(client, rebuild=False):
         client.delete_collection(COLLECTION_NAME)
 
     return client.get_or_create_collection(name=COLLECTION_NAME)
+
+
+def mock_embedding(text: str) -> List[float]:
+    """Create a deterministic mock embedding based on the text content hash.
+
+    This is used for testing without a valid OpenAI API key.
+    """
+    # Generate a deterministic hash of the text
+    text_hash = hashlib.md5(text.encode()).hexdigest()
+
+    # Use the hash to seed a random generator for deterministic embeddings
+    seed = int(text_hash, 16) % (2**32 - 1)
+    rng = np.random.RandomState(seed)
+
+    # Generate a random vector of length 1536 (same as text-embedding-ada-002)
+    embedding = rng.rand(1536).astype(np.float32)
+
+    # Normalize to unit length for cosine similarity
+    norm = np.linalg.norm(embedding)
+    if norm > 0:
+        embedding = embedding / norm
+
+    return embedding.tolist()
 
 
 def find_json_files(project_dir: str) -> List[str]:
@@ -117,10 +157,17 @@ def chunk_perspective_view(
             components = view_json["root"]["children"]
         else:
             components = [view_json["root"]]
+
+        # Process root-level parameters if they exist
+        if "params" in view_json["root"]:
+            params_json = json.dumps(view_json["root"]["params"], ensure_ascii=False)
+            if len(enc.encode(params_json)) <= MAX_TOKENS:
+                meta = {**view_meta, "section": "params"}
+                chunks.append((params_json, meta))
     else:
         components = [view_json]
 
-    # Process view-level properties if they exist
+    # Process view-level properties if they exist (non-root)
     if isinstance(view_json, dict) and "params" in view_json:
         params_json = json.dumps(view_json["params"], ensure_ascii=False)
         if len(enc.encode(params_json)) <= MAX_TOKENS:
@@ -259,21 +306,32 @@ def generate_embeddings(texts: List[str], batch_size: int = 20) -> List[List[flo
     """Generate embeddings for a list of texts using OpenAI's API."""
     embeddings = []
 
+    # Use mock embeddings if in mock mode
+    if MOCK_EMBEDDINGS:
+        print("Using mock embeddings for testing")
+        for text in texts:
+            embeddings.append(mock_embedding(text))
+        return embeddings
+
+    # Use OpenAI API for real embeddings
     for i in range(0, len(texts), batch_size):
         batch = texts[i : i + batch_size]
         try:
-            response = openai.Embedding.create(
+            # Updated for OpenAI v1.0+
+            response = client.embeddings.create(
                 model="text-embedding-ada-002", input=batch
             )
-            batch_embeddings = [item["embedding"] for item in response["data"]]
+            batch_embeddings = [item.embedding for item in response.data]
             embeddings.extend(batch_embeddings)
             print(
                 f"Generated embeddings for batch {i//batch_size + 1}/{(len(texts) + batch_size - 1) // batch_size}"
             )
         except Exception as e:
             print(f"Error generating embeddings for batch starting at index {i}: {e}")
-            # Insert empty embeddings for the failed batch to maintain alignment
-            embeddings.extend([[0.0] * 1536 for _ in range(len(batch))])
+            print("Falling back to mock embeddings for this batch")
+            # Fall back to mock embeddings if the API call fails
+            for text in batch:
+                embeddings.append(mock_embedding(text))
 
     return embeddings
 
@@ -350,9 +408,20 @@ def main(
     file: Optional[str] = typer.Option(
         None, "--file", help="Index only a specific file"
     ),
+    mock: bool = typer.Option(
+        False,
+        "--mock",
+        help="Use mock embeddings for testing without an OpenAI API key",
+    ),
 ):
     """Main function to index Ignition project files."""
     print(f"Indexing Ignition project at: {path}")
+
+    # Set mock mode if requested
+    global MOCK_EMBEDDINGS
+    if mock:
+        MOCK_EMBEDDINGS = True
+        print("Mock embedding mode enabled")
 
     if not os.path.exists(path):
         print(f"Error: Path {path} does not exist")

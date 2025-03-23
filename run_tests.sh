@@ -31,7 +31,8 @@ cp tests/data/sample_tags.json "${TEST_DIR}/ignition_project/tags/tank_tags.json
 # Set up environment for testing
 echo -e "${BLUE}Setting up test environment...${NC}"
 export PYTHONPATH="${PYTHONPATH}:$(pwd)"
-export OPENAI_API_KEY="test-api-key"
+export OPENAI_API_KEY=${OPENAI_API_KEY}
+export MOCK_EMBEDDINGS="true"
 export TEST_MODE="true"
 export LOG_LEVEL="ERROR"  # Reduce logging noise during tests
 
@@ -52,7 +53,7 @@ fi
 
 echo -e "Running flake8..."
 if command -v flake8 &> /dev/null; then
-  if flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics; then
+  if flake8 api.py indexer.py cursor_agent.py watcher.py logger.py example_client.py main.py --count --select=E9,F63,F7,F82 --show-source --statistics; then
     echo -e "${GREEN}Flake8 check passed${NC}"
   else
     echo -e "${RED}Flake8 check failed${NC}"

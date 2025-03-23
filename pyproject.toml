@@ -1,0 +1,32 @@
+[project]
+name = "ignition-rag-agent"
+version = "0.1.0"
+description = "Retrieval-Augmented Generation (RAG) pipeline for Ignition codebase"
+readme = "README.md"
+requires-python = ">=3.8"
+authors = [
+    {name = "YourName"},
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pytest-cov",
+    "black",
+    "flake8",
+    "isort",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+markers = [
+    "unit: unit tests that mock external dependencies",
+    "integration: integration tests that require external dependencies",
+    "slow: tests that are slow to run",
+]
+
+[tool.ruff]
+line-length = 100

@@ -1,5 +1,6 @@
 # Core dependencies
 openai==1.6.1
+numpy==1.24.4  # Using pre-2.0 version for compatibility with chromadb
 chromadb==0.4.22
 fastapi==0.109.0
 uvicorn==0.25.0

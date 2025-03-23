@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 import os
 import time
+import hashlib
+import numpy as np
 import chromadb
 from chromadb.config import Settings
-import openai
+from openai import OpenAI
 from dotenv import load_dotenv
 from typing import List, Optional, Dict, Any
 from fastapi import FastAPI, HTTPException, Depends, Request, status
@@ -21,10 +23,26 @@ load_dotenv()
 # Initialize logger
 logger = get_logger("api")
 
-# Initialize OpenAI client
-openai.api_key = os.getenv("OPENAI_API_KEY")
-if not openai.api_key:
-    logger.warning("OPENAI_API_KEY environment variable not set")
+# Check if we're in mock mode (for testing without OpenAI API key)
+MOCK_EMBEDDINGS = os.getenv("MOCK_EMBEDDINGS", "false").lower() == "true"
+if MOCK_EMBEDDINGS:
+    logger.info("Using mock embeddings for testing")
+
+# Initialize OpenAI client only if we're not in mock mode or we have a key
+openai_api_key = os.getenv("OPENAI_API_KEY")
+if not MOCK_EMBEDDINGS or openai_api_key:
+    try:
+        openai_client = OpenAI(api_key=openai_api_key)
+        logger.info("Initialized OpenAI client")
+    except Exception as e:
+        logger.error(f"Failed to initialize OpenAI client: {e}")
+        if not MOCK_EMBEDDINGS:
+            logger.warning(
+                "No valid OpenAI API key and mock mode is not enabled, some features may not work"
+            )
+else:
+    openai_client = None
+    logger.info("OpenAI client not initialized (using mock mode)")
 
 # Initialize Chroma settings
 PERSIST_DIRECTORY = "chroma_index"
@@ -54,6 +72,26 @@ app.add_middleware(
 app.add_middleware(LoggerMiddleware)
 
 
+def mock_embedding(text: str) -> List[float]:
+    """Create a deterministic mock embedding based on the text content hash."""
+    # Generate a deterministic hash of the text
+    text_hash = hashlib.md5(text.encode()).hexdigest()
+
+    # Use the hash to seed a random generator for deterministic embeddings
+    seed = int(text_hash, 16) % (2**32 - 1)
+    rng = np.random.RandomState(seed)
+
+    # Generate a random vector of length 1536 (same as text-embedding-ada-002)
+    embedding = rng.rand(1536).astype(np.float32)
+
+    # Normalize to unit length for cosine similarity
+    norm = np.linalg.norm(embedding)
+    if norm > 0:
+        embedding = embedding / norm
+
+    return embedding.tolist()
+
+
 # Add custom exception handler
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
@@ -77,11 +115,8 @@ try:
         chroma_client = chromadb.HttpClient(host=CHROMA_HOST, port=int(CHROMA_PORT))
     else:
         logger.info(f"Using local Chroma with persistence at {PERSIST_DIRECTORY}")
-        chroma_client = chromadb.Client(
-            Settings(
-                chroma_db_impl="duckdb+parquet", persist_directory=PERSIST_DIRECTORY
-            )
-        )
+        # Updated client initialization for newer ChromaDB versions
+        chroma_client = chromadb.PersistentClient(path=PERSIST_DIRECTORY)
 
     # Get collection or create if it doesn't exist
     collection = chroma_client.get_collection(name=COLLECTION_NAME)
@@ -96,11 +131,8 @@ except Exception as e:
         if CHROMA_HOST and CHROMA_PORT:
             chroma_client = chromadb.HttpClient(host=CHROMA_HOST, port=int(CHROMA_PORT))
         else:
-            chroma_client = chromadb.Client(
-                Settings(
-                    chroma_db_impl="duckdb+parquet", persist_directory=PERSIST_DIRECTORY
-                )
-            )
+            # Updated client initialization for newer ChromaDB versions
+            chroma_client = chromadb.PersistentClient(path=PERSIST_DIRECTORY)
         collection = chroma_client.create_collection(name=COLLECTION_NAME)
     except Exception as create_error:
         logger.critical(
@@ -119,6 +151,10 @@ class QueryRequest(BaseModel):
     filter_path: Optional[str] = Field(
         None, description="Filter results by file path pattern"
     )
+    use_mock: Optional[bool] = Field(
+        None,
+        description="Use mock embeddings for testing (overrides environment variable)",
+    )
 
 
 # Define chunk response model
@@ -132,6 +168,7 @@ class Chunk(BaseModel):
 class QueryResponse(BaseModel):
     results: List[Chunk] = Field(..., description="List of matching chunks")
     total: int = Field(..., description="Total number of results found")
+    mock_used: bool = Field(False, description="Whether mock embeddings were used")
 
 
 # Health check dependency to verify OpenAI and Chroma are working
@@ -139,9 +176,9 @@ async def verify_dependencies():
     """Verify that all dependencies are working."""
     errors = []
 
-    # Check OpenAI API key
-    if not openai.api_key:
-        errors.append("OpenAI API key not configured")
+    # Check OpenAI API key if not in mock mode
+    if not MOCK_EMBEDDINGS and not openai_api_key:
+        errors.append("OpenAI API key not configured and mock mode is not enabled")
 
     # Check Chroma connection
     try:
@@ -164,6 +201,7 @@ async def root():
         "name": "Ignition RAG API",
         "description": "API for querying Ignition project files using semantic search",
         "version": "1.0.0",
+        "mock_mode": MOCK_EMBEDDINGS,
         "endpoints": {
             "/query": "POST - Query the vector database",
             "/stats": "GET - Get statistics about the indexed data",
@@ -179,7 +217,8 @@ async def health_check(deps: None = Depends(verify_dependencies)):
     return {
         "status": "healthy",
         "chroma": {"connected": True, "documents": collection.count()},
-        "openai": {"configured": bool(openai.api_key)},
+        "openai": {"configured": bool(openai_api_key) or MOCK_EMBEDDINGS},
+        "mock_mode": MOCK_EMBEDDINGS,
     }
 
 
@@ -193,6 +232,12 @@ async def query_vector_store(
         f"Query request received: '{req.query}', top_k={req.top_k}, filters={req.filter_type}/{req.filter_path}"
     )
 
+    # Check if mock mode is requested for this query
+    use_mock = MOCK_EMBEDDINGS
+    if req.use_mock is not None:
+        use_mock = req.use_mock
+        logger.info(f"Mock mode overridden to: {use_mock}")
+
     try:
         # Prepare filter if any
         where_filter = {}
@@ -204,20 +249,33 @@ async def query_vector_store(
         # Use where_filter only if it has any conditions
         where_document = where_filter if where_filter else None
 
-        # Embed the query text
+        # Get embedding for the query
         try:
             embedding_start = time.time()
-            response = openai.Embedding.create(
-                model="text-embedding-ada-002", input=[req.query]
-            )
-            query_vector = response["data"][0]["embedding"]
+
+            if use_mock:
+                # Use mock embedding if in mock mode
+                query_vector = mock_embedding(req.query)
+                logger.debug("Using mock embedding for query")
+            else:
+                # Use OpenAI API for real embedding
+                response = openai_client.embeddings.create(
+                    model="text-embedding-ada-002", input=[req.query]
+                )
+                query_vector = response.data[0].embedding
+
             logger.debug(f"Generated embedding in {time.time() - embedding_start:.2f}s")
         except Exception as e:
             logger.error(f"Error generating embedding: {e}", exc_info=True)
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=f"Error generating embedding: {str(e)}",
-            )
+            if not use_mock:
+                logger.info("Falling back to mock embedding")
+                query_vector = mock_embedding(req.query)
+                use_mock = True
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=f"Error generating embedding: {str(e)}",
+                )
 
         # Perform similarity search in Chroma
         try:
@@ -250,9 +308,9 @@ async def query_vector_store(
 
         response_time = time.time() - start_time
         logger.info(
-            f"Query completed in {response_time:.2f}s, found {len(chunks)} results"
+            f"Query completed in {response_time:.2f}s, found {len(chunks)} results, mock_mode={use_mock}"
         )
-        return QueryResponse(results=chunks, total=len(chunks))
+        return QueryResponse(results=chunks, total=len(chunks), mock_used=use_mock)
 
     except HTTPException:
         # Re-raise HTTP exceptions to preserve status code
@@ -276,6 +334,10 @@ class AgentQueryRequest(BaseModel):
         None,
         description="Additional context for the agent (e.g., current file being edited)",
     )
+    use_mock: Optional[bool] = Field(
+        None,
+        description="Use mock embeddings for testing (overrides environment variable)",
+    )
 
 
 class AgentQueryResponse(BaseModel):
@@ -285,6 +347,7 @@ class AgentQueryResponse(BaseModel):
     suggested_prompt: Optional[str] = Field(
         None, description="Suggested prompt incorporating the context"
     )
+    mock_used: bool = Field(False, description="Whether mock embeddings were used")
 
 
 @app.post("/agent/query", response_model=AgentQueryResponse)
@@ -296,6 +359,12 @@ async def agent_query(
     logger.info(
         f"Agent query received: '{req.query}', top_k={req.top_k}, context={req.context}"
     )
+
+    # Check if mock mode is requested for this query
+    use_mock = MOCK_EMBEDDINGS
+    if req.use_mock is not None:
+        use_mock = req.use_mock
+        logger.info(f"Mock mode overridden to: {use_mock}")
 
     try:
         # Extract any filter from context
@@ -311,22 +380,36 @@ async def agent_query(
             file_base = os.path.basename(current_file)
             if "." in file_base:
                 file_base = file_base.split(".")[0]
-                where_filter["filepath"] = {"$contains": file_base}
+                # Using simple equality instead of $contains
+                where_filter["filepath"] = file_base
 
-        # Embed the query text
+        # Get embedding for the query
         try:
             embedding_start = time.time()
-            response = openai.Embedding.create(
-                model="text-embedding-ada-002", input=[req.query]
-            )
-            query_vector = response["data"][0]["embedding"]
+
+            if use_mock:
+                # Use mock embedding if in mock mode
+                query_vector = mock_embedding(req.query)
+                logger.debug("Using mock embedding for query")
+            else:
+                # Use OpenAI API for real embedding
+                response = openai_client.embeddings.create(
+                    model="text-embedding-ada-002", input=[req.query]
+                )
+                query_vector = response.data[0].embedding
+
             logger.debug(f"Generated embedding in {time.time() - embedding_start:.2f}s")
         except Exception as e:
             logger.error(f"Error generating embedding: {e}", exc_info=True)
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=f"Error generating embedding: {str(e)}",
-            )
+            if not use_mock:
+                logger.info("Falling back to mock embedding")
+                query_vector = mock_embedding(req.query)
+                use_mock = True
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=f"Error generating embedding: {str(e)}",
+                )
 
         # Perform similarity search in Chroma
         try:
@@ -390,11 +473,13 @@ async def agent_query(
 
         response_time = time.time() - start_time
         logger.info(
-            f"Agent query completed in {response_time:.2f}s, found {len(context_chunks)} chunks"
+            f"Agent query completed in {response_time:.2f}s, found {len(context_chunks)} chunks, mock_mode={use_mock}"
         )
 
         return AgentQueryResponse(
-            context_chunks=context_chunks, suggested_prompt=suggested_prompt
+            context_chunks=context_chunks,
+            suggested_prompt=suggested_prompt,
+            mock_used=use_mock,
         )
 
     except HTTPException:
@@ -452,6 +537,7 @@ async def get_stats():
             "total_documents": count,
             "collection_name": COLLECTION_NAME,
             "type_distribution": type_stats,
+            "mock_mode": MOCK_EMBEDDINGS,
         }
 
     except HTTPException:

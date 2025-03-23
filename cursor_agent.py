@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Default API endpoint
-RAG_API_URL = os.getenv("RAG_API_URL", "http://localhost:8000")
+RAG_API_URL = os.getenv("RAG_API_URL", "http://localhost:8001")
 
 
 def query_rag(

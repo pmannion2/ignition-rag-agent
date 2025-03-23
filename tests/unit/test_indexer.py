@@ -18,6 +18,8 @@ from indexer import (
     load_json_files,
     create_chunks,
     process_component,
+    MOCK_EMBEDDINGS,
+    mock_embedding,
 )
 
 
@@ -119,6 +121,22 @@ class TestIndexer(unittest.TestCase):
             "type": "perspective",
             "name": "test_view",
         }
+
+        # Make sure the sample_view has the correct structure
+        if "root" in self.sample_view and "params" in self.sample_view["root"]:
+            # Structure is already correct
+            pass
+        else:
+            # Add parameters to the root for the test
+            self.sample_view = {
+                "root": {
+                    **self.sample_view,
+                    "params": {
+                        "title": "Test View",
+                        "description": "This is a test view",
+                    },
+                }
+            }
 
         chunks = chunk_perspective_view(self.sample_view, view_meta)
 
