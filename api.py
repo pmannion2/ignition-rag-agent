@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import asyncio
 import hashlib
 import json
 import os
@@ -683,13 +684,54 @@ async def index_project(request: IndexRequest):
     total_files = len(json_files)
     start_time = time.time()
 
-    # Rate limiting variables
-    tokens_in_minute = 0
-    minute_start = time.time()
-    max_tokens_per_minute = 80000  # Conservative limit below OpenAI's 100K TPM
-
     # Set limits for chunking
     hard_token_limit = 7500
+
+    # Helper function for exponential backoff retry
+    async def generate_embedding_with_backoff(text, max_retries=5, initial_backoff=1):
+        """Generate embedding with exponential backoff for rate limit handling."""
+        if MOCK_EMBEDDINGS:
+            return indexer_mock_embedding(text)
+
+        retries = 0
+        backoff_time = initial_backoff
+
+        while retries <= max_retries:
+            try:
+                response = openai_client.embeddings.create(
+                    input=text, model="text-embedding-ada-002"
+                )
+                return response.data[0].embedding
+            except Exception as e:
+                error_str = str(e).lower()
+
+                # Check if this is a rate limit error
+                if (
+                    "rate limit" in error_str
+                    or "too many requests" in error_str
+                    or "429" in error_str
+                ):
+                    retries += 1
+                    if retries > max_retries:
+                        logger.error(
+                            f"Max retries reached for rate limit. Final error: {e!s}"
+                        )
+                        raise
+
+                    logger.info(
+                        f"Rate limit hit. Backing off for {backoff_time:.1f} seconds (retry {retries}/{max_retries})"
+                    )
+                    await asyncio.sleep(backoff_time)
+
+                    # Exponential backoff: double the wait time for next retry
+                    backoff_time *= 2
+                else:
+                    # Not a rate limit error, re-raise
+                    logger.error(f"Error generating embedding: {e!s}")
+                    raise
+
+        # This should not be reached due to the raise in the loop
+        raise Exception("Failed to generate embedding after maximum retries")
 
     # Helper function for character chunking (copied from main.py)
     def chunk_by_characters(text, max_chunk_size):
@@ -763,35 +805,9 @@ async def index_project(request: IndexRequest):
 
             # Always chunk files over 3000 tokens to ensure safer processing
             if token_count <= 3000:
-                # Check rate limits
-                if (
-                    not request.skip_rate_limiting
-                    and tokens_in_minute + token_count > max_tokens_per_minute
-                ):
-                    # Wait until the minute is up
-                    elapsed = time.time() - minute_start
-                    if elapsed < 60:
-                        sleep_time = 60 - elapsed
-                        logger.info(
-                            f"Rate limit approaching. Sleeping for {sleep_time:.1f} seconds..."
-                        )
-                        time.sleep(sleep_time)
-                    # Reset rate limit counter
-                    tokens_in_minute = 0
-                    minute_start = time.time()
-
                 try:
-                    # Generate embedding using OpenAI or mock
-                    if MOCK_EMBEDDINGS:
-                        embedding = indexer_mock_embedding(content)
-                        logger.info("Generated mock embedding")
-                    else:
-                        response = openai_client.embeddings.create(
-                            input=content, model="text-embedding-ada-002"
-                        )
-                        embedding = response.data[0].embedding
-                        # Update rate limit counter
-                        tokens_in_minute += token_count
+                    # Generate embedding with backoff for rate limiting
+                    embedding = await generate_embedding_with_backoff(content)
 
                     # Add to collection
                     file_path_replaced = file_path.replace("/", "_").replace("\\", "_")
@@ -805,7 +821,7 @@ async def index_project(request: IndexRequest):
                     chunk_count += 1
                     logger.info(f"Indexed {file_path} as a single chunk")
                 except Exception as e:
-                    logger.error(f"Error processing {file_path}: {e}")
+                    logger.error(f"Error processing {file_path}: {e!s}")
             else:
                 # For large files, we need to chunk the content
                 logger.info(f"File exceeds token limit, chunking: {file_path}")
@@ -910,37 +926,11 @@ async def index_project(request: IndexRequest):
 
                     # Process chunks
                     for i, (chunk_text, chunk_metadata) in enumerate(chunks):
-                        # Check rate limits for OpenAI API
-                        chunk_tokens = len(enc.encode(chunk_text))
-
-                        if (
-                            not request.skip_rate_limiting
-                            and not MOCK_EMBEDDINGS
-                            and tokens_in_minute + chunk_tokens > max_tokens_per_minute
-                        ):
-                            # Wait until the minute is up
-                            elapsed = time.time() - minute_start
-                            if elapsed < 60:
-                                sleep_time = 60 - elapsed
-                                logger.info(
-                                    f"Rate limit approaching. Sleeping for {sleep_time:.1f} seconds..."
-                                )
-                                time.sleep(sleep_time)
-                            # Reset rate limit counter
-                            tokens_in_minute = 0
-                            minute_start = time.time()
-
                         try:
-                            # Generate embedding
-                            if MOCK_EMBEDDINGS:
-                                embedding = indexer_mock_embedding(chunk_text)
-                            else:
-                                response = openai_client.embeddings.create(
-                                    input=chunk_text, model="text-embedding-ada-002"
-                                )
-                                embedding = response.data[0].embedding
-                                # Update rate limit counter
-                                tokens_in_minute += chunk_tokens
+                            # Generate embedding with backoff
+                            embedding = await generate_embedding_with_backoff(
+                                chunk_text
+                            )
 
                             # Create a unique ID for this chunk
                             file_path_replaced = file_path.replace("/", "_").replace(
@@ -959,21 +949,21 @@ async def index_project(request: IndexRequest):
                             chunk_count += 1
                         except Exception as e:
                             logger.error(
-                                f"Error processing chunk {i} of {file_path}: {e}"
+                                f"Error processing chunk {i} of {file_path}: {e!s}"
                             )
 
                     doc_count += 1
                     logger.info(f"Indexed {file_path} into {len(chunks)} chunks")
 
                 except Exception as e:
-                    logger.error(f"Error chunking {file_path}: {e}")
+                    logger.error(f"Error chunking {file_path}: {e!s}")
 
             # Calculate time taken for this file
             file_time = time.time() - file_start_time
             logger.info(f"Processed {file_path} in {file_time:.2f} seconds")
 
         except Exception as e:
-            logger.error(f"Error processing {file_path}: {e}")
+            logger.error(f"Error processing {file_path}: {e!s}")
 
     # Calculate total time
     total_time = time.time() - start_time

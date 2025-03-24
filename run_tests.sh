@@ -3,11 +3,16 @@ set -e
 
 # Process command line arguments
 SKIP_LINT=false
+INCLUDE_E2E=false
 for arg in "$@"; do
   case $arg in
     --no-lint)
       SKIP_LINT=true
       shift # Remove --no-lint from processing
+      ;;
+    --include-e2e)
+      INCLUDE_E2E=true
+      shift # Remove --include-e2e from processing
       ;;
     *)
       # Unknown option
@@ -49,9 +54,18 @@ export MOCK_EMBEDDINGS="true"
 export TEST_MODE="true"
 export LOG_LEVEL="ERROR"  # Reduce logging noise during tests
 
+# Determine test targets
+if [ "$INCLUDE_E2E" = true ]; then
+  TEST_TARGETS="tests"
+  echo -e "${YELLOW}Running ALL tests including E2E tests - make sure API server is running!${NC}"
+else
+  TEST_TARGETS="tests/unit tests/integration"
+  echo -e "${YELLOW}Running unit and integration tests only. Use --include-e2e to run E2E tests.${NC}"
+fi
+
 # Run tests
 echo -e "${BLUE}Running tests...${NC}"
-if pytest -v --cov=. --cov-report term-missing --cov-config=.coveragerc; then
+if pytest -v --cov=. --cov-report term-missing --cov-config=.coveragerc $TEST_TARGETS; then
   echo -e "${GREEN}All tests passed${NC}"
 else
   echo -e "${RED}Tests failed${NC}"
