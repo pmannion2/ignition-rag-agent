@@ -640,10 +640,10 @@ async def index_project(request: IndexRequest):
         chroma_client = get_chroma_client()
         logger.info("Initialized Chroma client")
     except Exception as e:
-        logger.error(f"Failed to initialize Chroma client: {e}")
+        logger.error(f"Failed to initialize Chroma client: {e!s}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to initialize Chroma client: {str(e)}",
+            detail=f"Failed to initialize Chroma client: {e!s}",
         ) from e
 
     # Get or create collection
@@ -661,10 +661,10 @@ async def index_project(request: IndexRequest):
         collection = chroma_client.get_or_create_collection(name=collection_name)
         logger.info(f"Using collection: {collection_name}")
     except Exception as e:
-        logger.error(f"Failed to create collection: {e}")
+        logger.error(f"Failed to create collection: {e!s}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create collection: {str(e)}",
+            detail=f"Failed to create collection: {e!s}",
         ) from e
 
     # Path to the Ignition project
@@ -689,7 +689,6 @@ async def index_project(request: IndexRequest):
     max_tokens_per_minute = 80000  # Conservative limit below OpenAI's 100K TPM
 
     # Set limits for chunking
-    max_chunk_size = 7000
     hard_token_limit = 7500
 
     # Helper function for character chunking (copied from main.py)
