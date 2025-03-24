@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 import hashlib
+import json
 import os
 import time
 import traceback
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import chromadb
@@ -14,6 +16,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from openai import OpenAI
 from pydantic import BaseModel, Field
+
+# Import chunking functions from indexer
+from indexer import create_chunks, enc
+from indexer import mock_embedding as indexer_mock_embedding
 
 # Import custom logger
 from logger import LoggerMiddleware, get_logger
@@ -607,6 +613,387 @@ async def get_stats():
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=error_msg
         ) from e
+
+
+# Define index request model
+class IndexRequest(BaseModel):
+    """Request model for indexing the Ignition project files."""
+
+    project_path: str = Field(
+        "./whk-ignition-scada", description="Path to the Ignition project directory"
+    )
+    rebuild: bool = Field(
+        False, description="Whether to rebuild the index from scratch"
+    )
+    skip_rate_limiting: bool = Field(
+        False, description="Skip rate limiting for faster processing (use with caution)"
+    )
+
+
+@app.post("/index", summary="Index Ignition project files")
+async def index_project(request: IndexRequest):
+    """Index Ignition project files for semantic search."""
+    logger.info(f"Starting indexing of Ignition project at {request.project_path}")
+
+    # Initialize Chroma client
+    try:
+        chroma_client = get_chroma_client()
+        logger.info("Initialized Chroma client")
+    except Exception as e:
+        logger.error(f"Failed to initialize Chroma client: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to initialize Chroma client: {str(e)}",
+        ) from e
+
+    # Get or create collection
+    collection_name = COLLECTION_NAME
+
+    # Delete collection if rebuild requested
+    if request.rebuild:
+        try:
+            chroma_client.delete_collection(collection_name)
+            logger.info(f"Deleted existing collection: {collection_name}")
+        except Exception as e:
+            logger.warning(f"Error deleting collection (may not exist): {e}")
+
+    try:
+        collection = chroma_client.get_or_create_collection(name=collection_name)
+        logger.info(f"Using collection: {collection_name}")
+    except Exception as e:
+        logger.error(f"Failed to create collection: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create collection: {str(e)}",
+        ) from e
+
+    # Path to the Ignition project
+    project_path = Path(request.project_path)
+
+    # Find JSON files in the Ignition project
+    json_files = []
+    for path in project_path.rglob("*.json"):
+        json_files.append(str(path))
+
+    logger.info(f"Found {len(json_files)} JSON files in the Ignition project")
+
+    # Process each file
+    doc_count = 0
+    chunk_count = 0
+    total_files = len(json_files)
+    start_time = time.time()
+
+    # Rate limiting variables
+    tokens_in_minute = 0
+    minute_start = time.time()
+    max_tokens_per_minute = 80000  # Conservative limit below OpenAI's 100K TPM
+
+    # Set limits for chunking
+    max_chunk_size = 7000
+    hard_token_limit = 7500
+
+    # Helper function for character chunking (copied from main.py)
+    def chunk_by_characters(text, max_chunk_size):
+        """Chunk a text by a fixed number of characters, respecting JSON structure when possible."""
+        if len(text) <= max_chunk_size:
+            return [text]
+
+        chunks = []
+        current_pos = 0
+        text_length = len(text)
+
+        while current_pos < text_length:
+            # Default end position
+            end_pos = min(current_pos + max_chunk_size, text_length)
+
+            # If we're not at the end of the text, try to find a better split point
+            if end_pos < text_length:
+                # Look for JSON structural elements to split on
+                candidates = []
+
+                # Find commas between array/object items
+                comma_pos = text.rfind(",", current_pos, end_pos)
+                if comma_pos > current_pos:
+                    candidates.append((comma_pos + 1, "comma"))
+
+                # Find closing braces/brackets followed by comma
+                brace_pos = text.rfind("},", current_pos, end_pos)
+                if brace_pos > current_pos:
+                    candidates.append((brace_pos + 1, "brace"))
+
+                bracket_pos = text.rfind("],", current_pos, end_pos)
+                if bracket_pos > current_pos:
+                    candidates.append((bracket_pos + 1, "bracket"))
+
+                # If we found candidates, use the latest one
+                if candidates:
+                    candidates.sort(reverse=True)
+                    end_pos = candidates[0][0]
+
+            # Extract the chunk
+            chunk = text[current_pos:end_pos]
+            chunks.append(chunk)
+            current_pos = end_pos
+
+        return chunks
+
+    for file_index, file_path in enumerate(json_files):
+        file_start_time = time.time()
+        try:
+            logger.info(f"Processing {file_path}... [{file_index+1}/{total_files}]")
+            with open(file_path, encoding="utf-8") as f:
+                content = f.read()
+
+            # Skip empty files
+            if not content.strip():
+                logger.info(f"Skipping empty file: {file_path}")
+                continue
+
+            # Create metadata for this file
+            metadata = {
+                "filepath": file_path,
+                "filename": os.path.basename(file_path),
+                "directory": os.path.dirname(file_path),
+                "type": "json",
+                "source": file_path,
+            }
+
+            # Check token count
+            token_count = len(enc.encode(content))
+            logger.info(f"File has {token_count} tokens")
+
+            # Always chunk files over 3000 tokens to ensure safer processing
+            if token_count <= 3000:
+                # Check rate limits
+                if (
+                    not request.skip_rate_limiting
+                    and tokens_in_minute + token_count > max_tokens_per_minute
+                ):
+                    # Wait until the minute is up
+                    elapsed = time.time() - minute_start
+                    if elapsed < 60:
+                        sleep_time = 60 - elapsed
+                        logger.info(
+                            f"Rate limit approaching. Sleeping for {sleep_time:.1f} seconds..."
+                        )
+                        time.sleep(sleep_time)
+                    # Reset rate limit counter
+                    tokens_in_minute = 0
+                    minute_start = time.time()
+
+                try:
+                    # Generate embedding using OpenAI or mock
+                    if MOCK_EMBEDDINGS:
+                        embedding = indexer_mock_embedding(content)
+                        logger.info("Generated mock embedding")
+                    else:
+                        response = openai_client.embeddings.create(
+                            input=content, model="text-embedding-ada-002"
+                        )
+                        embedding = response.data[0].embedding
+                        # Update rate limit counter
+                        tokens_in_minute += token_count
+
+                    # Add to collection
+                    file_path_replaced = file_path.replace("/", "_").replace("\\", "_")
+                    collection.add(
+                        ids=[file_path_replaced],
+                        documents=[content],
+                        embeddings=[embedding],
+                        metadatas=[metadata],
+                    )
+                    doc_count += 1
+                    chunk_count += 1
+                    logger.info(f"Indexed {file_path} as a single chunk")
+                except Exception as e:
+                    logger.error(f"Error processing {file_path}: {e}")
+            else:
+                # For large files, we need to chunk the content
+                logger.info(f"File exceeds token limit, chunking: {file_path}")
+
+                try:
+                    # For extremely large files (>50K tokens), use a character-level chunking approach
+                    if token_count > 50000:
+                        logger.info(
+                            f"Very large file ({token_count} tokens), using character-level chunking"
+                        )
+                        chunks = []
+
+                        # For json files, try to intelligently split on braces or brackets
+                        if file_path.endswith(".json"):
+                            try:
+                                # Try to parse as JSON first to extract key structures
+                                json_content = json.loads(content)
+                                logger.info(
+                                    f"Successfully parsed JSON for {file_path} - type: {type(json_content).__name__}"
+                                )
+
+                                # For array-type JSONs, split at the top level
+                                if (
+                                    isinstance(json_content, list)
+                                    and len(json_content) > 1
+                                ):
+                                    logger.info(
+                                        f"Using array-level chunking for JSON array with {len(json_content)} items"
+                                    )
+                                    sub_chunks = []
+                                    current_array = []
+                                    current_tokens = 0
+
+                                    # Process each array element
+                                    for item in json_content:
+                                        item_str = json.dumps(item)
+                                        item_tokens = len(enc.encode(item_str))
+
+                                        # If this item alone exceeds the limit, we need to chunk it further
+                                        if item_tokens > hard_token_limit:
+                                            # Process any accumulated items
+                                            if current_array:
+                                                array_str = json.dumps(current_array)
+                                                sub_chunks.append(array_str)
+                                                current_array = []
+                                                current_tokens = 0
+
+                                            # Chunk this large item by characters, preserving JSON format
+                                            item_chunks = chunk_by_characters(
+                                                item_str,
+                                                int(hard_token_limit / 1.2),
+                                            )
+                                            sub_chunks.extend(item_chunks)
+                                        # If adding this would exceed limit, create a new chunk
+                                        elif (
+                                            current_tokens + item_tokens
+                                            > hard_token_limit
+                                        ):
+                                            array_str = json.dumps(current_array)
+                                            sub_chunks.append(array_str)
+                                            current_array = [item]
+                                            current_tokens = item_tokens
+                                        # Otherwise add to current chunk
+                                        else:
+                                            current_array.append(item)
+                                            current_tokens += item_tokens
+
+                                    # Add any remaining items
+                                    if current_array:
+                                        array_str = json.dumps(current_array)
+                                        sub_chunks.append(array_str)
+
+                                    chunks = [(chunk, metadata) for chunk in sub_chunks]
+                                else:
+                                    # For other JSON structures, fall back to character-level chunking
+                                    text_chunks = chunk_by_characters(
+                                        content,
+                                        int(hard_token_limit / 1.2),
+                                    )
+                                    chunks = [
+                                        (chunk, metadata) for chunk in text_chunks
+                                    ]
+                            except json.JSONDecodeError:
+                                # If JSON parsing fails, use character-level chunking
+                                text_chunks = chunk_by_characters(
+                                    content,
+                                    int(hard_token_limit / 1.2),
+                                )
+                                chunks = [(chunk, metadata) for chunk in text_chunks]
+                        else:
+                            # For non-JSON files, use character-level chunking
+                            text_chunks = chunk_by_characters(
+                                content,
+                                int(hard_token_limit / 1.2),
+                            )
+                            chunks = [(chunk, metadata) for chunk in text_chunks]
+                    else:
+                        # For moderately sized files, use create_chunks from indexer module
+                        # Preprocess the document to match expected input format
+                        doc = {"content": content, "metadata": metadata}
+                        chunks = create_chunks([doc])
+
+                    # Process chunks
+                    for i, (chunk_text, chunk_metadata) in enumerate(chunks):
+                        # Check rate limits for OpenAI API
+                        chunk_tokens = len(enc.encode(chunk_text))
+
+                        if (
+                            not request.skip_rate_limiting
+                            and not MOCK_EMBEDDINGS
+                            and tokens_in_minute + chunk_tokens > max_tokens_per_minute
+                        ):
+                            # Wait until the minute is up
+                            elapsed = time.time() - minute_start
+                            if elapsed < 60:
+                                sleep_time = 60 - elapsed
+                                logger.info(
+                                    f"Rate limit approaching. Sleeping for {sleep_time:.1f} seconds..."
+                                )
+                                time.sleep(sleep_time)
+                            # Reset rate limit counter
+                            tokens_in_minute = 0
+                            minute_start = time.time()
+
+                        try:
+                            # Generate embedding
+                            if MOCK_EMBEDDINGS:
+                                embedding = indexer_mock_embedding(chunk_text)
+                            else:
+                                response = openai_client.embeddings.create(
+                                    input=chunk_text, model="text-embedding-ada-002"
+                                )
+                                embedding = response.data[0].embedding
+                                # Update rate limit counter
+                                tokens_in_minute += chunk_tokens
+
+                            # Create a unique ID for this chunk
+                            file_path_replaced = file_path.replace("/", "_").replace(
+                                "\\", "_"
+                            )
+                            chunk_id = f"{file_path_replaced}_chunk_{i}"
+
+                            # Add to collection
+                            collection.add(
+                                ids=[chunk_id],
+                                documents=[chunk_text],
+                                embeddings=[embedding],
+                                metadatas=[chunk_metadata],
+                            )
+
+                            chunk_count += 1
+                        except Exception as e:
+                            logger.error(
+                                f"Error processing chunk {i} of {file_path}: {e}"
+                            )
+
+                    doc_count += 1
+                    logger.info(f"Indexed {file_path} into {len(chunks)} chunks")
+
+                except Exception as e:
+                    logger.error(f"Error chunking {file_path}: {e}")
+
+            # Calculate time taken for this file
+            file_time = time.time() - file_start_time
+            logger.info(f"Processed {file_path} in {file_time:.2f} seconds")
+
+        except Exception as e:
+            logger.error(f"Error processing {file_path}: {e}")
+
+    # Calculate total time
+    total_time = time.time() - start_time
+    avg_time = total_time / total_files if total_files > 0 else 0
+
+    # Summary
+    result = {
+        "indexed_files": doc_count,
+        "total_chunks": chunk_count,
+        "total_files_found": total_files,
+        "total_time_seconds": total_time,
+        "average_time_per_file": avg_time,
+        "project_path": str(project_path),
+    }
+
+    logger.info(f"Indexing completed in {total_time:.2f} seconds")
+    logger.info(f"Indexed {doc_count}/{total_files} files into {chunk_count} chunks")
+
+    return result
 
 
 if __name__ == "__main__":
