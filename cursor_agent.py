@@ -146,7 +146,9 @@ def get_cursor_context(
             context_str += f"--- Context {i}: {source} ---\n"
             context_str += f"{content}\n\n"
 
-        context_str += "Use the above context to help answer the query or generate appropriate code.\n"
+        context_str += (
+            "Use the above context to help answer the query or generate appropriate code.\n"
+        )
         return context_str
 
     # No context available
@@ -182,9 +184,7 @@ def get_ignition_tag_info(tag_name: str) -> dict:
         }
 
     # Get tag information from the RAG system
-    rag_results = query_rag(
-        query=f"Tag configuration for {tag_name}", top_k=1, filter_type="tag"
-    )
+    rag_results = query_rag(query=f"Tag configuration for {tag_name}", top_k=1, filter_type="tag")
 
     # Extract tag info from the context
     context_chunks = rag_results.get("context_chunks", [])
@@ -208,9 +208,7 @@ def get_ignition_tag_info(tag_name: str) -> dict:
     return {"error": f"Could not parse tag information for {tag_name}"}
 
 
-def get_ignition_view_component(
-    view_name: str, component_name: Optional[str] = None
-) -> dict:
+def get_ignition_view_component(view_name: str, component_name: Optional[str] = None) -> dict:
     """
     Get information about a specific view or component in an Ignition project.
 
@@ -223,9 +221,7 @@ def get_ignition_view_component(
     """
     # Check if mock mode is enabled
     if USE_MOCK_EMBEDDINGS:
-        logger.info(
-            f"Using mock data for view: {view_name}, component: {component_name}"
-        )
+        logger.info(f"Using mock data for view: {view_name}, component: {component_name}")
         # Create a mock response
         if component_name:
             return {
@@ -238,9 +234,7 @@ def get_ignition_view_component(
                     "width": 200,
                     "height": 150,
                     "text": (
-                        f"Mock {component_name}"
-                        if "label" in component_name.lower()
-                        else None
+                        f"Mock {component_name}" if "label" in component_name.lower() else None
                     ),
                 },
                 "mock_used": True,
@@ -281,11 +275,7 @@ def get_ignition_view_component(
             content_obj = json.loads(content.strip())
 
             # For component search
-            if (
-                component_name
-                and "name" in content_obj
-                and content_obj["name"] == component_name
-            ):
+            if component_name and "name" in content_obj and content_obj["name"] == component_name:
                 return content_obj
 
             # For view search

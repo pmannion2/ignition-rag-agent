@@ -26,14 +26,18 @@ logger.addHandler(console_handler)
 
 # Add file handler for general logs
 file_handler = RotatingFileHandler(
-    os.path.join(LOG_DIR, "app.log"), maxBytes=10485760, backupCount=10  # 10MB
+    os.path.join(LOG_DIR, "app.log"),
+    maxBytes=10485760,
+    backupCount=10,  # 10MB
 )
 file_handler.setFormatter(log_format)
 logger.addHandler(file_handler)
 
 # Add file handler for errors only
 error_handler = RotatingFileHandler(
-    os.path.join(LOG_DIR, "error.log"), maxBytes=10485760, backupCount=10  # 10MB
+    os.path.join(LOG_DIR, "error.log"),
+    maxBytes=10485760,
+    backupCount=10,  # 10MB
 )
 error_handler.setLevel(logging.ERROR)
 error_handler.setFormatter(log_format)
@@ -69,7 +73,5 @@ class LoggerMiddleware:
             await self.app(scope, receive, send)
             self.logger.info(f"Response {request_id}: {method} {path} completed")
         except Exception as e:
-            self.logger.error(
-                f"Error {request_id}: {method} {path} - {e!s}", exc_info=True
-            )
+            self.logger.error(f"Error {request_id}: {method} {path} - {e!s}", exc_info=True)
             raise

@@ -95,9 +95,7 @@ class IgnitionFileHandler(FileSystemEventHandler):
 
 @app.command()
 def main(
-    project_path: str = typer.Argument(
-        ..., help="Path to the Ignition project directory to watch"
-    ),
+    project_path: str = typer.Argument(..., help="Path to the Ignition project directory to watch"),
     indexer_path: str = typer.Option("indexer.py", help="Path to the indexer script"),
     debounce: int = typer.Option(5, help="Debounce period in seconds"),
 ):
@@ -108,9 +106,7 @@ def main(
 
     # Verify paths exist
     if not os.path.isdir(abs_project_path):
-        print(
-            f"Error: Project path '{abs_project_path}' does not exist or is not a directory"
-        )
+        print(f"Error: Project path '{abs_project_path}' does not exist or is not a directory")
         return
 
     if not os.path.isfile(abs_indexer_path):

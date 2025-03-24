@@ -8,9 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 # Add parent directory to path to import api
-sys.path.append(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-)
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 # Import after path setup
 import api
@@ -35,9 +33,7 @@ def mock_dependencies():
     # Apply mock patches at module level
     with patch.object(api, "MOCK_EMBEDDINGS", True), patch.object(
         api, "verify_dependencies", return_value=None
-    ), patch("api.get_collection"), patch("api.mock_embedding"), patch(
-        "api.openai_client"
-    ):
+    ), patch("api.get_collection"), patch("api.mock_embedding"), patch("api.openai_client"):
         yield
 
 

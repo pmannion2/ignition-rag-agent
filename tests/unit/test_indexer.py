@@ -9,9 +9,7 @@ import unittest
 import pytest
 
 # Add parent directory to path to import indexer
-sys.path.append(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-)
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from indexer import (
     chunk_perspective_view,
     chunk_tag_config,
@@ -100,9 +98,7 @@ class TestIndexer(unittest.TestCase):
         view_doc = next(
             (doc for doc in documents if doc["metadata"]["filepath"] == view_file), None
         )
-        tag_doc = next(
-            (doc for doc in documents if doc["metadata"]["filepath"] == tag_file), None
-        )
+        tag_doc = next((doc for doc in documents if doc["metadata"]["filepath"] == tag_file), None)
 
         assert view_doc is not None
         assert tag_doc is not None
@@ -149,9 +145,7 @@ class TestIndexer(unittest.TestCase):
         assert params_chunk is not None
 
         # Check that a component is included
-        component_chunk = next(
-            (chunk for chunk in chunks if "component" in chunk[1]), None
-        )
+        component_chunk = next((chunk for chunk in chunks if "component" in chunk[1]), None)
         assert component_chunk is not None
 
         # Verify chunk contents are JSON strings
@@ -217,9 +211,7 @@ class TestIndexer(unittest.TestCase):
         assert len(all_chunks) > 0
 
         # Check that we have both types of chunks
-        perspective_chunks = [
-            chunk for chunk in all_chunks if chunk[1]["type"] == "perspective"
-        ]
+        perspective_chunks = [chunk for chunk in all_chunks if chunk[1]["type"] == "perspective"]
         tag_chunks = [chunk for chunk in all_chunks if chunk[1]["type"] == "tag"]
 
         assert len(perspective_chunks) > 0

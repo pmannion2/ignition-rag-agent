@@ -215,9 +215,7 @@ def check_chroma_status(host, port):
             create_tenant_url = f"http://{host}:{port}/api/v1/tenants"
             create_tenant_data = {"name": "default_tenant"}
             create_response = requests.post(create_tenant_url, json=create_tenant_data)
-            print(
-                f"Create tenant response: {create_response.status_code} - {create_response.text}"
-            )
+            print(f"Create tenant response: {create_response.status_code} - {create_response.text}")
         except Exception as e:
             print(f"Error creating tenant: {e}")
 
@@ -308,9 +306,7 @@ def main():
 
         # Add to collection
         print(f"Adding {len(docs)} documents to collection...")
-        collection.add(
-            documents=docs, embeddings=embeddings, metadatas=metadatas, ids=ids
-        )
+        collection.add(documents=docs, embeddings=embeddings, metadatas=metadatas, ids=ids)
 
         # Verify documents were added
         count = collection.count()

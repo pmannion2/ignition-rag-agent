@@ -167,9 +167,7 @@ def load_json_files(file_paths: List[str]) -> List[Dict[str, Any]]:
     return documents
 
 
-def chunk_perspective_view(
-    view_json: Dict[str, Any], view_meta: Dict[str, str]
-) -> List[tuple]:
+def chunk_perspective_view(view_json: Dict[str, Any], view_meta: Dict[str, str]) -> List[tuple]:
     """Split a Perspective view JSON into semantically meaningful chunks."""
     chunks = []
 
@@ -230,9 +228,7 @@ def process_component(comp, view_meta, chunks, parent_path=""):
             comp_copy = {k: v for k, v in comp.items() if k != "children"}
             comp_without_children = json.dumps(comp_copy, ensure_ascii=False)
             if len(enc.encode(comp_without_children)) <= MAX_TOKENS:
-                chunks.append(
-                    (comp_without_children, {**comp_meta, "section": "properties"})
-                )
+                chunks.append((comp_without_children, {**comp_meta, "section": "properties"}))
         else:
             # Split properties if no children but still too large
             props = list(comp.items())
@@ -341,13 +337,11 @@ def generate_embeddings(texts: List[str], batch_size: int = 20) -> List[List[flo
         batch = texts[i : i + batch_size]
         try:
             # Updated for OpenAI v1.0+
-            response = client.embeddings.create(
-                model="text-embedding-ada-002", input=batch
-            )
+            response = client.embeddings.create(model="text-embedding-ada-002", input=batch)
             batch_embeddings = [item.embedding for item in response.data]
             embeddings.extend(batch_embeddings)
             print(
-                f"Generated embeddings for batch {i//batch_size + 1}/{(len(texts) + batch_size - 1) // batch_size}"
+                f"Generated embeddings for batch {i // batch_size + 1}/{(len(texts) + batch_size - 1) // batch_size}"
             )
         except Exception as e:
             print(f"Error generating embeddings for batch starting at index {i}: {e}")
@@ -422,15 +416,11 @@ def load_last_index_time() -> float:
 @app.command()
 def main(
     path: str = typer.Argument(..., help="Path to the Ignition project directory"),
-    rebuild: bool = typer.Option(
-        False, "--rebuild", help="Rebuild the index from scratch"
-    ),
+    rebuild: bool = typer.Option(False, "--rebuild", help="Rebuild the index from scratch"),
     changed_only: bool = typer.Option(
         False, "--changed-only", help="Only index files changed since last run"
     ),
-    file: Optional[str] = typer.Option(
-        None, "--file", help="Index only a specific file"
-    ),
+    file: Optional[str] = typer.Option(None, "--file", help="Index only a specific file"),
     mock: bool = typer.Option(
         False,
         "--mock",
@@ -468,9 +458,7 @@ def main(
     elif changed_only and not rebuild:
         # Index only files changed since last run
         last_index_time = load_last_index_time()
-        json_files = [
-            f for f in all_json_files if os.path.getmtime(f) > last_index_time
-        ]
+        json_files = [f for f in all_json_files if os.path.getmtime(f) > last_index_time]
         print(
             f"Found {len(json_files)} changed files since {datetime.fromtimestamp(last_index_time)}"
         )

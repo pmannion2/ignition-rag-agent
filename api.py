@@ -183,9 +183,7 @@ def get_collection():
         try:
             collection = client.get_collection(COLLECTION_NAME)
             doc_count = collection.count()
-            logger.info(
-                f"Connected to collection '{COLLECTION_NAME}' with {doc_count} documents"
-            )
+            logger.info(f"Connected to collection '{COLLECTION_NAME}' with {doc_count} documents")
         except ValueError:
             logger.info(f"Creating new collection '{COLLECTION_NAME}'")
             collection = client.create_collection(COLLECTION_NAME)
@@ -361,9 +359,7 @@ async def query(request: QueryRequest):
             "metadata": {
                 "total_chunks": collection.count(),
                 "query": request.query,
-                "embedding_type": (
-                    "mock" if MOCK_EMBEDDINGS or not openai_client else "openai"
-                ),
+                "embedding_type": ("mock" if MOCK_EMBEDDINGS or not openai_client else "openai"),
             },
         }
 
@@ -401,14 +397,10 @@ class AgentQueryResponse(BaseModel):
 
 
 @app.post("/agent/query", response_model=AgentQueryResponse)
-async def agent_query(
-    req: AgentQueryRequest, deps: None = Depends(verify_dependencies)
-):
+async def agent_query(req: AgentQueryRequest, deps: None = Depends(verify_dependencies)):
     """Agent-optimized query endpoint for Cursor integration."""
     start_time = time.time()
-    logger.info(
-        f"Agent query received: '{req.query}', top_k={req.top_k}, context={req.context}"
-    )
+    logger.info(f"Agent query received: '{req.query}', top_k={req.top_k}, context={req.context}")
 
     # Check if mock mode is requested for this query
     use_mock = MOCK_EMBEDDINGS
@@ -523,9 +515,7 @@ async def agent_query(
                 suggested_prompt += f"\n--- Context {i} ({chunk['source']}) ---\n"
                 suggested_prompt += f"{chunk['content']}\n"
 
-            suggested_prompt += (
-                "\nBased on the above context, please help with the query."
-            )
+            suggested_prompt += "\nBased on the above context, please help with the query."
             logger.debug(f"Generated prompt in {time.time() - prompt_start:.2f}s")
 
         response_time = time.time() - start_time
@@ -623,9 +613,7 @@ class IndexRequest(BaseModel):
     project_path: str = Field(
         "./whk-ignition-scada", description="Path to the Ignition project directory"
     )
-    rebuild: bool = Field(
-        False, description="Whether to rebuild the index from scratch"
-    )
+    rebuild: bool = Field(False, description="Whether to rebuild the index from scratch")
     skip_rate_limiting: bool = Field(
         False, description="Skip rate limiting for faster processing (use with caution)"
     )
@@ -713,9 +701,7 @@ async def index_project(request: IndexRequest):
                 ):
                     retries += 1
                     if retries > max_retries:
-                        logger.error(
-                            f"Max retries reached for rate limit. Final error: {e!s}"
-                        )
+                        logger.error(f"Max retries reached for rate limit. Final error: {e!s}")
                         raise
 
                     logger.info(
@@ -781,7 +767,7 @@ async def index_project(request: IndexRequest):
     for file_index, file_path in enumerate(json_files):
         file_start_time = time.time()
         try:
-            logger.info(f"Processing {file_path}... [{file_index+1}/{total_files}]")
+            logger.info(f"Processing {file_path}... [{file_index + 1}/{total_files}]")
             with open(file_path, encoding="utf-8") as f:
                 content = f.read()
 
@@ -844,10 +830,7 @@ async def index_project(request: IndexRequest):
                                 )
 
                                 # For array-type JSONs, split at the top level
-                                if (
-                                    isinstance(json_content, list)
-                                    and len(json_content) > 1
-                                ):
+                                if isinstance(json_content, list) and len(json_content) > 1:
                                     logger.info(
                                         f"Using array-level chunking for JSON array with {len(json_content)} items"
                                     )
@@ -876,10 +859,7 @@ async def index_project(request: IndexRequest):
                                             )
                                             sub_chunks.extend(item_chunks)
                                         # If adding this would exceed limit, create a new chunk
-                                        elif (
-                                            current_tokens + item_tokens
-                                            > hard_token_limit
-                                        ):
+                                        elif current_tokens + item_tokens > hard_token_limit:
                                             array_str = json.dumps(current_array)
                                             sub_chunks.append(array_str)
                                             current_array = [item]
@@ -901,9 +881,7 @@ async def index_project(request: IndexRequest):
                                         content,
                                         int(hard_token_limit / 1.2),
                                     )
-                                    chunks = [
-                                        (chunk, metadata) for chunk in text_chunks
-                                    ]
+                                    chunks = [(chunk, metadata) for chunk in text_chunks]
                             except json.JSONDecodeError:
                                 # If JSON parsing fails, use character-level chunking
                                 text_chunks = chunk_by_characters(
@@ -928,14 +906,10 @@ async def index_project(request: IndexRequest):
                     for i, (chunk_text, chunk_metadata) in enumerate(chunks):
                         try:
                             # Generate embedding with backoff
-                            embedding = await generate_embedding_with_backoff(
-                                chunk_text
-                            )
+                            embedding = await generate_embedding_with_backoff(chunk_text)
 
                             # Create a unique ID for this chunk
-                            file_path_replaced = file_path.replace("/", "_").replace(
-                                "\\", "_"
-                            )
+                            file_path_replaced = file_path.replace("/", "_").replace("\\", "_")
                             chunk_id = f"{file_path_replaced}_chunk_{i}"
 
                             # Add to collection
@@ -948,9 +922,7 @@ async def index_project(request: IndexRequest):
 
                             chunk_count += 1
                         except Exception as e:
-                            logger.error(
-                                f"Error processing chunk {i} of {file_path}: {e!s}"
-                            )
+                            logger.error(f"Error processing chunk {i} of {file_path}: {e!s}")
 
                     doc_count += 1
                     logger.info(f"Indexed {file_path} into {len(chunks)} chunks")

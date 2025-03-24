@@ -68,7 +68,7 @@ def get_rag_context(query, current_file=None, top_k=3, filter_type=None):
             metadata = chunk.get("metadata", {})
             file_path = metadata.get("filepath", "Unknown file")
 
-            context_text += f"## Context {i+1}: {source} ({file_path})\n"
+            context_text += f"## Context {i + 1}: {source} ({file_path})\n"
             context_text += "```json\n"
             context_text += content + "\n"
             context_text += "```\n\n"
@@ -101,13 +101,9 @@ def main():
     parser = argparse.ArgumentParser(description="Cursor Client for Ignition RAG")
     parser.add_argument("query", help="The query to search for")
     parser.add_argument("--file", "-f", help="Path to the current file")
-    parser.add_argument(
-        "--top-k", "-k", type=int, default=3, help="Number of results to return"
-    )
+    parser.add_argument("--top-k", "-k", type=int, default=3, help="Number of results to return")
     parser.add_argument("--filter", help="Filter by document type (perspective or tag)")
-    parser.add_argument(
-        "--output", "-o", help="Output format (text or json)", default="text"
-    )
+    parser.add_argument("--output", "-o", help="Output format (text or json)", default="text")
 
     args = parser.parse_args()
 

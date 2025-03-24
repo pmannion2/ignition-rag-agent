@@ -54,9 +54,7 @@ def chunk_by_characters(text, max_chunk_size):
         token_count = len(enc.encode(chunk))
         if token_count > HARD_TOKEN_LIMIT:
             # If still too large, use a more aggressive approach
-            print(
-                f"Warning: Chunk still too large ({token_count} tokens). Forcing smaller size."
-            )
+            print(f"Warning: Chunk still too large ({token_count} tokens). Forcing smaller size.")
             # Reduce max_chars and try again from this starting point
             max_chars = max_chars // 2
             continue
@@ -93,9 +91,7 @@ def process_large_file(file_path):
                     item = json_content[i]
                     item_str = json.dumps(item)
                     item_tokens = len(enc.encode(item_str))
-                    print(
-                        f"Item {i}: {item_tokens} tokens, type: {type(item).__name__}"
-                    )
+                    print(f"Item {i}: {item_tokens} tokens, type: {type(item).__name__}")
 
             # Test chunking - character based
             print("\nTesting character-based chunking...")

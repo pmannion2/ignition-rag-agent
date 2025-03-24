@@ -8,9 +8,7 @@ import unittest
 from unittest.mock import patch
 
 # Add parent directory to path
-sys.path.append(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-)
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from fastapi.testclient import TestClient
 
 import indexer
@@ -52,15 +50,9 @@ class TestIntegration(unittest.TestCase):
         os.environ["MOCK_EMBEDDINGS"] = "true"
         os.environ["CHROMA_DB_PATH"] = cls.index_dir
         os.environ["USE_PERSISTENT_CHROMA"] = "false"  # Use in-memory for tests
-        os.environ["USE_IN_MEMORY_CHROMA"] = (
-            "true"  # Use in-memory Chroma client for tests
-        )
-        os.environ["CHROMA_HOST"] = (
-            ""  # Clear CHROMA_HOST to avoid HTTP connection attempts
-        )
-        os.environ["CHROMA_PORT"] = (
-            ""  # Clear CHROMA_PORT to avoid HTTP connection attempts
-        )
+        os.environ["USE_IN_MEMORY_CHROMA"] = "true"  # Use in-memory Chroma client for tests
+        os.environ["CHROMA_HOST"] = ""  # Clear CHROMA_HOST to avoid HTTP connection attempts
+        os.environ["CHROMA_PORT"] = ""  # Clear CHROMA_PORT to avoid HTTP connection attempts
 
         # Create a test client for the API
         cls.client = TestClient(app)
@@ -103,9 +95,7 @@ class TestIntegration(unittest.TestCase):
             # Patch the API to use our existing collection
             with patch("api.get_collection", return_value=collection):
                 # Test query endpoint
-                response = self.client.post(
-                    "/query", json={"query": "Tank Level", "top_k": 2}
-                )
+                response = self.client.post("/query", json={"query": "Tank Level", "top_k": 2})
                 assert response.status_code == 200
                 query_data = response.json()
                 assert "results" in query_data

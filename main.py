@@ -28,7 +28,7 @@ def main(
         False,
         "--skip-rate-limiting",
         help="Skip rate limiting for faster processing (use with caution)",
-    )
+    ),
 ):
     print("Starting Ignition project indexing with OpenAI embeddings...")
 
@@ -77,7 +77,7 @@ def main(
     for file_index, file_path in enumerate(json_files):
         file_start_time = time.time()
         try:
-            print(f"Processing {file_path}... [{file_index+1}/{total_files}]")
+            print(f"Processing {file_path}... [{file_index + 1}/{total_files}]")
             with open(file_path, encoding="utf-8") as f:
                 content = f.read()
 
@@ -111,9 +111,7 @@ def main(
                     elapsed = time.time() - minute_start
                     if elapsed < 60:
                         sleep_time = 60 - elapsed
-                        print(
-                            f"Rate limit approaching. Sleeping for {sleep_time:.1f} seconds..."
-                        )
+                        print(f"Rate limit approaching. Sleeping for {sleep_time:.1f} seconds...")
                         time.sleep(sleep_time)
                     # Reset rate limit counter
                     tokens_in_minute = 0
@@ -165,10 +163,7 @@ def main(
                                 )
 
                                 # For array-type JSONs, split at the top level
-                                if (
-                                    isinstance(json_content, list)
-                                    and len(json_content) > 1
-                                ):
+                                if isinstance(json_content, list) and len(json_content) > 1:
                                     print(
                                         f"Using array-level chunking for JSON array with {len(json_content)} items"
                                     )
@@ -199,10 +194,7 @@ def main(
                                             )
                                             sub_chunks.extend(item_chunks)
                                         # If adding this would exceed limit, create a new chunk
-                                        elif (
-                                            current_tokens + item_tokens
-                                            > HARD_TOKEN_LIMIT
-                                        ):
+                                        elif current_tokens + item_tokens > HARD_TOKEN_LIMIT:
                                             array_str = json.dumps(current_array)
                                             sub_chunks.append(array_str)
                                             current_array = [item]
@@ -222,20 +214,14 @@ def main(
                                     # For other JSON structures, fall back to character-level chunking
                                     text_chunks = chunk_by_characters(
                                         content,
-                                        int(
-                                            HARD_TOKEN_LIMIT / 1.2
-                                        ),  # Fixed integer division
+                                        int(HARD_TOKEN_LIMIT / 1.2),  # Fixed integer division
                                     )
-                                    chunks = [
-                                        (chunk, metadata) for chunk in text_chunks
-                                    ]
+                                    chunks = [(chunk, metadata) for chunk in text_chunks]
                             except json.JSONDecodeError:
                                 # If JSON parsing fails, use character-level chunking
                                 text_chunks = chunk_by_characters(
                                     content,
-                                    int(
-                                        HARD_TOKEN_LIMIT / 1.2
-                                    ),  # Fixed integer division
+                                    int(HARD_TOKEN_LIMIT / 1.2),  # Fixed integer division
                                 )
                                 chunks = [(chunk, metadata) for chunk in text_chunks]
                         else:
@@ -263,7 +249,7 @@ def main(
                         try:
                             # Show progress for every chunk to better track processing
                             print(
-                                f"  Processing chunk {i+1}/{len(chunks)} for {os.path.basename(file_path)} (total chunks so far: {chunk_count})"
+                                f"  Processing chunk {i + 1}/{len(chunks)} for {os.path.basename(file_path)} (total chunks so far: {chunk_count})"
                             )
 
                             # Verify chunk size isn't too large
@@ -272,15 +258,14 @@ def main(
                             # Skip chunks that are still too large
                             if chunk_token_count > 8000:
                                 print(
-                                    f"  Warning: Chunk {i+1} is too large ({chunk_token_count} tokens). Skipping."
+                                    f"  Warning: Chunk {i + 1} is too large ({chunk_token_count} tokens). Skipping."
                                 )
                                 continue
 
                             # Check and handle rate limits
                             if (
                                 not skip_rate_limiting
-                                and tokens_in_minute + chunk_token_count
-                                > max_tokens_per_minute
+                                and tokens_in_minute + chunk_token_count > max_tokens_per_minute
                             ):
                                 elapsed = time.time() - minute_start
                                 if elapsed < 60:
@@ -317,7 +302,7 @@ def main(
                             chunk_successes += 1
 
                         except Exception as e:
-                            print(f"  Error processing chunk {i+1} of {file_path}: {e}")
+                            print(f"  Error processing chunk {i + 1} of {file_path}: {e}")
 
                     # Show file summary and timings
                     file_time = time.time() - file_start_time
@@ -333,39 +318,31 @@ def main(
         except Exception as e:
             print(f"Error opening/reading {file_path}: {e}")
 
-    print(
-        f"Indexing complete. Collection now has {collection.count()} documents/chunks"
-    )
+    print(f"Indexing complete. Collection now has {collection.count()} documents/chunks")
     print(f"Total files indexed: {doc_count}")
     print(f"Total chunks indexed: {chunk_count}")
 
     # Calculate and print timing information
     total_time = time.time() - start_time
     chunks_per_second = chunk_count / total_time if total_time > 0 else 0
-    print(
-        f"Total processing time: {total_time:.1f} seconds ({total_time/60:.1f} minutes)"
-    )
+    print(f"Total processing time: {total_time:.1f} seconds ({total_time / 60:.1f} minutes)")
     print(f"Average speed: {chunks_per_second:.2f} chunks per second")
 
     if chunk_count > 0 and doc_count > 0:
-        print(f"Average chunks per file: {chunk_count/doc_count:.1f}")
+        print(f"Average chunks per file: {chunk_count / doc_count:.1f}")
 
     # Test a simple query
     if chunk_count > 0:
         query_text = "Show me all the tank level configurations"
-        query_response = client.embeddings.create(
-            input=query_text, model="text-embedding-ada-002"
-        )
+        query_response = client.embeddings.create(input=query_text, model="text-embedding-ada-002")
         query_embedding = query_response.data[0].embedding
 
         results = collection.query(query_embeddings=[query_embedding], n_results=3)
 
         print("\nTest Query Results:")
         print(f"Query: '{query_text}'")
-        for i, (doc, metadata) in enumerate(
-            zip(results["documents"][0], results["metadatas"][0])
-        ):
-            print(f"\nResult {i+1} from {metadata['source']}:")
+        for i, (doc, metadata) in enumerate(zip(results["documents"][0], results["metadatas"][0])):
+            print(f"\nResult {i + 1} from {metadata['source']}:")
             print(f"{doc[:250]}...")
 
 
@@ -409,9 +386,7 @@ def chunk_by_characters(text, max_chunk_size):
         token_count = len(enc.encode(chunk))
         if token_count > HARD_TOKEN_LIMIT:
             # If still too large, use a more aggressive approach
-            print(
-                f"Warning: Chunk still too large ({token_count} tokens). Forcing smaller size."
-            )
+            print(f"Warning: Chunk still too large ({token_count} tokens). Forcing smaller size.")
             # Reduce max_chars and try again from this starting point
             max_chars = max_chars // 2
             continue
