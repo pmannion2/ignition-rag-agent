@@ -30,6 +30,10 @@ def mock_collection():
 @pytest.fixture(autouse=True, scope="module")
 def mock_dependencies():
     """Mock API dependencies for all tests."""
+    # Create openai_client if it doesn't exist
+    if not hasattr(api, "openai_client"):
+        api.openai_client = None
+
     # Apply mock patches at module level
     with patch.object(api, "MOCK_EMBEDDINGS", True), patch.object(
         api, "verify_dependencies", return_value=None
