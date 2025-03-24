@@ -1,73 +1,43 @@
 #!/usr/bin/env python3
 import json
 import os
+import sys
 
 import tiktoken
 from dotenv import load_dotenv
+
+# Add the current directory to path so we can import the indexer
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from indexer import (
+    HARD_TOKEN_LIMIT,
+    chunk_by_characters,
+    chunk_perspective_view,
+    chunk_tag_config,
+)
 
 # Load environment variables
 load_dotenv()
 
 # Initialize tokenizer for GPT models
 enc = tiktoken.get_encoding("cl100k_base")
-MAX_TOKENS = 7000  # Target max tokens per chunk
-HARD_TOKEN_LIMIT = 7500  # Hard limit for safety
 
 
-def chunk_by_characters(text, max_chunk_size):
-    """Chunk text by characters, ensuring no chunk exceeds the token limit."""
-    chunks = []
+def test_chunking_strategies(file_path, size_limit=None):
+    """Test different chunking methods on a file and compare results.
 
-    # Convert max_chunk_size from tokens to approximate characters (rough estimate)
-    # Typically 1 token ≈ 4 characters for English text
-    max_chars = int(max_chunk_size * 3)
+    Args:
+        file_path: Path to the file to test
+        size_limit: If set, limit testing to files smaller than this size (in MB)
+    """
+    # Check file size if limit is set
+    if size_limit:
+        file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+        if file_size_mb > size_limit:
+            print(
+                f"Skipping {file_path} as it exceeds size limit ({file_size_mb:.1f} MB > {size_limit} MB)"
+            )
+            return
 
-    # Initialize chunking variables
-    start = 0
-    text_length = len(text)
-
-    while start < text_length:
-        # Calculate end position
-        end = min(start + max_chars, text_length)
-
-        # If we're not at the end, try to find a good break point
-        if end < text_length:
-            # Try to find a natural break (newline, period, comma, etc.)
-            natural_breaks = ["\n\n", "\n", ". ", ", ", " ", ".", ","]
-
-            for separator in natural_breaks:
-                # Look for the separator within a window near the end
-                window_size = min(200, max_chars // 4)
-                window_start = max(start, end - window_size)
-
-                # Find the last occurrence of the separator in this window
-                last_sep = text.rfind(separator, window_start, end)
-
-                if last_sep > window_start:
-                    end = last_sep + len(separator)
-                    break
-
-        # Extract the chunk
-        chunk = text[start:end]
-
-        # Verify token count for safety
-        token_count = len(enc.encode(chunk))
-        if token_count > HARD_TOKEN_LIMIT:
-            # If still too large, use a more aggressive approach
-            print(f"Warning: Chunk still too large ({token_count} tokens). Forcing smaller size.")
-            # Reduce max_chars and try again from this starting point
-            max_chars = max_chars // 2
-            continue
-
-        # Add chunk and move to next position
-        chunks.append(chunk)
-        start = end
-
-    return chunks
-
-
-def process_large_file(file_path):
-    """Process a large file and test the chunking mechanism."""
     print(f"Testing chunking on {file_path}")
 
     try:
@@ -83,48 +53,128 @@ def process_large_file(file_path):
             json_content = json.loads(content)
             print(f"Successfully parsed as JSON. Type: {type(json_content).__name__}")
 
-            if isinstance(json_content, list):
-                print(f"JSON is an array with {len(json_content)} items")
+            # Test appropriate chunking strategy based on file type
+            if "view.json" in file_path:
+                print("\nTesting perspective view chunking (Context-Preserving)...")
+                meta = {
+                    "filepath": file_path,
+                    "name": os.path.basename(os.path.dirname(file_path)),
+                }
+                chunks = chunk_perspective_view(json_content, meta)
+                print(f"Created {len(chunks)} chunks using Context-Preserving chunking")
 
-                # Sample a few items
-                for i in range(min(3, len(json_content))):
-                    item = json_content[i]
-                    item_str = json.dumps(item)
-                    item_tokens = len(enc.encode(item_str))
-                    print(f"Item {i}: {item_tokens} tokens, type: {type(item).__name__}")
+                # Print chunk statistics
+                print_chunk_stats(chunks, file_path, "View Context-Preserving")
 
-            # Test chunking - character based
-            print("\nTesting character-based chunking...")
-            chunks = chunk_by_characters(content, int(HARD_TOKEN_LIMIT / 1.2))
-            print(f"Created {len(chunks)} chunks")
+            elif "tags" in file_path.lower():
+                print("\nTesting tag hierarchical chunking...")
+                meta = {
+                    "filepath": file_path,
+                    "folder": os.path.basename(file_path).split(".")[0],
+                }
+                chunks = chunk_tag_config(json_content, meta)
+                print(f"Created {len(chunks)} chunks using Tag Hierarchy chunking")
 
-            # Print chunk statistics
-            for i, chunk in enumerate(chunks[:3]):  # Just show first 3 chunks
-                chunk_tokens = len(enc.encode(chunk))
-                print(f"Chunk {i}: {chunk_tokens} tokens, {len(chunk)} characters")
+                # Print chunk statistics
+                print_chunk_stats(chunks, file_path, "Tag Hierarchy")
+
+            else:
+                # Fallback to character chunking for unknown content
+                print("\nTesting fallback character-based chunking...")
+                chunks = test_character_chunking(content)
+                print(f"Created {len(chunks)} chunks via character chunking")
 
         except json.JSONDecodeError as e:
             print(f"Failed to parse as JSON: {e}")
             # Fall back to character chunking for non-JSON content
-            chunks = chunk_by_characters(content, int(HARD_TOKEN_LIMIT / 1.2))
+            chunks = test_character_chunking(content)
             print(f"Created {len(chunks)} chunks via character chunking")
 
     except Exception as e:
         print(f"Error processing file: {e}")
 
 
+def test_character_chunking(content):
+    """Test the character-based chunking strategy."""
+    chunks = chunk_by_characters(content, int(HARD_TOKEN_LIMIT / 1.2))
+
+    # Print chunk statistics
+    for i, chunk in enumerate(chunks[:3]):  # Just show first 3 chunks
+        chunk_tokens = len(enc.encode(chunk))
+        print(f"Chunk {i}: {chunk_tokens} tokens, {len(chunk)} characters")
+
+    return chunks
+
+
+def print_chunk_stats(chunks, file_path, strategy_name):
+    """Print statistics about the chunks."""
+    print(f"\n{strategy_name} chunking results for {os.path.basename(file_path)}:")
+
+    # Get total tokens in file for compression ratio calculation
+    with open(file_path, encoding="utf-8") as f:
+        file_content = f.read()
+    file_token_count = len(enc.encode(file_content))
+
+    total_tokens = 0
+    max_tokens = 0
+    min_tokens = float("inf")
+
+    # Collect some statistics
+    for i, (chunk_text, chunk_meta) in enumerate(chunks[:10]):  # Analyze up to 10 chunks
+        tokens = len(enc.encode(chunk_text))
+        total_tokens += tokens
+        max_tokens = max(max_tokens, tokens)
+        min_tokens = min(min_tokens, tokens)
+
+        # Print context info for context-preserving chunks
+        if "context" in chunk_meta:
+            context = json.loads(chunk_meta["context"])
+            context_preview = (
+                str(context)[:100] + "..." if len(str(context)) > 100 else str(context)
+            )
+            print(f"Chunk {i}: {tokens} tokens, section: {chunk_meta.get('section', 'unknown')}")
+            print(f"  Context: {context_preview}")
+        else:
+            print(f"Chunk {i}: {tokens} tokens, section: {chunk_meta.get('section', 'unknown')}")
+
+    # Print overall statistics
+    print(f"\nTotal chunks: {len(chunks)}")
+    if chunks:
+        print(f"Average tokens per chunk: {total_tokens / min(len(chunks), 10):.1f}")
+        print(f"Min tokens: {min_tokens}, Max tokens: {max_tokens}")
+        print(f"Compression ratio: {file_token_count / total_tokens:.2f}x")
+
+
 def main():
-    # Process a few problematic large files
-    large_files = [
+    # Define a size limit for testing (in MB)
+    size_limit = 20  # Skip files larger than 20MB for this test
+
+    # Process problematic large files
+    large_tags = [
         "whk-ignition-scada/tags/WHK01.json",
         "whk-ignition-scada/tags/MQTT Engine.json",
         "whk-ignition-scada/tags/default.json",
         "whk-ignition-scada/tags/QSI_UDTs.json",
     ]
 
-    for file_path in large_files:
+    # Process view files
+    view_files = [
+        "whk-ignition-scada/com.inductiveautomation.perspective/views/Main/sidemenu/view.json",
+        "whk-ignition-scada/com.inductiveautomation.perspective/views/Exchange/MettlerToledoLibrary/Popups/IND/IND360/view.json",
+        "whk-ignition-scada/com.inductiveautomation.perspective/views/Exchange/MettlerToledoLibrary/Popups/Embedded Views/StatusIndicator/view.json",
+    ]
+
+    # Test both types of files
+    for file_path in large_tags:
         if os.path.exists(file_path):
-            process_large_file(file_path)
+            test_chunking_strategies(file_path, size_limit)
+            print("\n" + "=" * 50 + "\n")
+        else:
+            print(f"File not found: {file_path}")
+
+    for file_path in view_files:
+        if os.path.exists(file_path):
+            test_chunking_strategies(file_path, size_limit)
             print("\n" + "=" * 50 + "\n")
         else:
             print(f"File not found: {file_path}")
