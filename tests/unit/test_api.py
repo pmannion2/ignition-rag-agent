@@ -33,7 +33,9 @@ def mock_dependencies():
     # Apply mock patches at module level
     with patch.object(api, "MOCK_EMBEDDINGS", True), patch.object(
         api, "verify_dependencies", return_value=None
-    ), patch("api.get_collection"), patch("api.mock_embedding"), patch("api.openai_client"):
+    ), patch("api.get_collection"), patch("api.mock_embedding"), patch.object(
+        api, "openai_client", MagicMock()
+    ):
         yield
 
 
