@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Configuration
-RAG_API_URL = os.getenv("RAG_API_URL", "http://localhost:8001")
+RAG_API_URL = os.getenv("RAG_API_URL", "http://localhost:8000")
 
 
 def get_rag_context(query, current_file=None, top_k=3, filter_type=None):
@@ -79,21 +79,64 @@ def get_rag_context(query, current_file=None, top_k=3, filter_type=None):
         return f"Error retrieving context: {e!s}"
 
 
-def cursor_integration(query, current_file=None):
+def get_chat_response(query, current_file=None, top_k=3, filter_type=None):
     """
-    Format the RAG context for Cursor integration.
+    Get a conversational response from the RAG Chat API for a given query.
+
+    Args:
+        query (str): The query to search for
+        current_file (str, optional): Path to the current file being edited
+        top_k (int, optional): Number of results to return
+        filter_type (str, optional): Filter by document type (perspective or tag)
+
+    Returns:
+        str: Conversational response from the LLM with relevant context
+    """
+    try:
+        # Prepare the request
+        endpoint = f"{RAG_API_URL}/agent/chat"
+        payload = {
+            "query": query,
+            "top_k": top_k,
+            "filter_type": filter_type,
+            "context": {"current_file": current_file} if current_file else None,
+        }
+
+        # Make the request
+        response = requests.post(endpoint, json=payload)
+        response.raise_for_status()
+
+        # Parse the response
+        data = response.json()
+
+        # Return the conversational response
+        return data.get("response", f"No response generated for: {query}")
+
+    except Exception as e:
+        return f"Error retrieving response: {e!s}"
+
+
+def cursor_integration(query, current_file=None, use_chat=True):
+    """
+    Format the RAG response for Cursor integration.
     This function follows Cursor's expected format for agent responses.
 
     Args:
         query (str): User query
         current_file (str, optional): Current file being edited
+        use_chat (bool, optional): Whether to use conversational responses
 
     Returns:
         dict: Response in Cursor format
     """
-    context = get_rag_context(query, current_file)
+    if use_chat:
+        # Get a conversational response
+        response = get_chat_response(query, current_file)
+    else:
+        # Get just the RAG context
+        response = get_rag_context(query, current_file)
 
-    return {"content": context, "role": "assistant"}
+    return {"content": response, "role": "assistant"}
 
 
 def main():
@@ -104,15 +147,32 @@ def main():
     parser.add_argument("--top-k", "-k", type=int, default=3, help="Number of results to return")
     parser.add_argument("--filter", help="Filter by document type (perspective or tag)")
     parser.add_argument("--output", "-o", help="Output format (text or json)", default="text")
+    parser.add_argument(
+        "--chat",
+        "-c",
+        action="store_true",
+        help="Use chat mode to get conversational LLM responses (default)",
+    )
+    parser.add_argument(
+        "--context-only",
+        action="store_true",
+        help="Only return RAG context without conversational responses",
+    )
 
     args = parser.parse_args()
 
+    # Determine whether to use chat or context-only mode
+    use_chat = not args.context_only
+
     if args.output == "json":
-        result = cursor_integration(args.query, args.file)
+        result = cursor_integration(args.query, args.file, use_chat=use_chat)
         print(json.dumps(result, indent=2))
     else:
-        context = get_rag_context(args.query, args.file, args.top_k, args.filter)
-        print(context)
+        if use_chat:
+            response = get_chat_response(args.query, args.file, args.top_k, args.filter)
+        else:
+            response = get_rag_context(args.query, args.file, args.top_k, args.filter)
+        print(response)
 
 
 if __name__ == "__main__":

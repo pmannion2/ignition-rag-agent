@@ -92,6 +92,66 @@ def query_rag(
         return {"context_chunks": [], "suggested_prompt": None, "error": str(e)}
 
 
+def query_chat(
+    query: str,
+    top_k: int = 3,
+    filter_type: Optional[str] = None,
+    current_file: Optional[str] = None,
+) -> dict:
+    """
+    Query the RAG system and get conversational LLM responses.
+
+    Args:
+        query: The natural language query to search for
+        top_k: Number of results to return
+        filter_type: Optional filter for document type (perspective or tag)
+        current_file: The file currently being edited (for contextual relevance)
+
+    Returns:
+        Dictionary containing the LLM response and context chunks
+    """
+    try:
+        # Prepare the request to the chat endpoint
+        endpoint = f"{RAG_API_URL}/agent/chat"
+        payload = {
+            "query": query,
+            "top_k": top_k,
+            "filter_type": filter_type,
+            "context": {"current_file": current_file} if current_file else None,
+        }
+
+        # Check for mock mode
+        if USE_MOCK_EMBEDDINGS:
+            return {
+                "response": f"Here's a mock response about '{query}' because we're in testing mode.",
+                "context_chunks": [
+                    {
+                        "content": "This is mock content for testing",
+                        "source": "Mock source",
+                        "metadata": {"type": "mock", "filepath": "mock_file.json"},
+                        "similarity": 0.95,
+                    }
+                ],
+                "mock_used": True,
+            }
+
+        # Make the request
+        response = requests.post(endpoint, json=payload)
+        response.raise_for_status()  # Raise exception for HTTP errors
+
+        # Return the result data
+        return response.json()
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error querying Ignition RAG chat API: {e}")
+        return {
+            "response": f"I encountered an error when trying to process your query: {e}",
+            "context_chunks": [],
+            "mock_used": False,
+            "error": str(e),
+        }
+
+
 def get_cursor_context(
     user_query: str,
     cursor_context: Optional[Dict[str, Any]] = None,
@@ -153,6 +213,60 @@ def get_cursor_context(
 
     # No context available
     return f"No relevant Ignition project context found for: {user_query}"
+
+
+def get_cursor_chat_response(
+    user_query: str,
+    cursor_context: Optional[Dict[str, Any]] = None,
+    top_k: int = 5,
+) -> Dict[str, Any]:
+    """
+    Get a conversational LLM response for a Cursor query based on RAG context.
+
+    Args:
+        user_query: The user's query text
+        cursor_context: Dictionary containing cursor context (current file, selection, etc.)
+        top_k: Number of top results to return
+
+    Returns:
+        A dictionary with the formatted response for Cursor
+    """
+    # Extract relevant information from cursor context
+    current_file = cursor_context.get("current_file") if cursor_context else None
+
+    # Determine if we should filter by type based on file extension
+    filter_type = None
+    if current_file:
+        if current_file.endswith(".java"):
+            # If working with Java, more likely to be interested in Tags
+            filter_type = "tag"
+        elif current_file.endswith(".js") or current_file.endswith(".ts"):
+            # If working with JS/TS, more likely interested in Perspective views
+            filter_type = "perspective"
+
+    # Query the chat API
+    result = query_chat(
+        query=user_query,
+        top_k=top_k,
+        filter_type=filter_type,
+        current_file=current_file,
+    )
+
+    # Format the response for Cursor integration
+    response_text = result.get("response", "")
+    if not response_text:
+        response_text = f"No response was generated for your query: {user_query}"
+
+    # Return in the format expected by Cursor
+    return {
+        "content": response_text,
+        "role": "assistant",
+        # Include additional context for debugging if needed
+        "metadata": {
+            "rag_context_count": len(result.get("context_chunks", [])),
+            "mock_used": result.get("mock_used", False),
+        },
+    }
 
 
 def get_ignition_tag_info(tag_name: str) -> dict:

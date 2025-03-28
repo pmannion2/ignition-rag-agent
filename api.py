@@ -5,6 +5,7 @@ import json
 import os
 import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -30,6 +31,76 @@ load_dotenv()
 
 # Initialize logger
 logger = get_logger("api")
+
+# Global thread pool for CPU-bound operations
+CPU_THREAD_POOL_SIZE = int(os.getenv("CPU_THREAD_POOL_SIZE", "10"))
+thread_pool = ThreadPoolExecutor(max_workers=CPU_THREAD_POOL_SIZE)
+logger.info(f"Initialized thread pool with {CPU_THREAD_POOL_SIZE} workers")
+
+# Global semaphores for limiting concurrent OpenAI API calls
+# Separate semaphores for querying and indexing to prevent resource contention
+QUERY_CONCURRENCY_LIMIT = int(os.getenv("QUERY_CONCURRENCY_LIMIT", "10"))
+INDEX_CONCURRENCY_LIMIT = int(os.getenv("INDEX_CONCURRENCY_LIMIT", "5"))
+query_semaphore = asyncio.Semaphore(QUERY_CONCURRENCY_LIMIT)
+index_semaphore = asyncio.Semaphore(INDEX_CONCURRENCY_LIMIT)
+logger.info(f"Initialized query semaphore with {QUERY_CONCURRENCY_LIMIT} max concurrent operations")
+logger.info(f"Initialized index semaphore with {INDEX_CONCURRENCY_LIMIT} max concurrent operations")
+
+# Operation timeouts
+DEFAULT_QUERY_TIMEOUT = int(os.getenv("DEFAULT_QUERY_TIMEOUT", "30"))
+DEFAULT_INDEX_TIMEOUT = int(os.getenv("DEFAULT_INDEX_TIMEOUT", "60"))
+
+
+# Global token rate limiter
+class OpenAIRateLimiter:
+    """Global rate limiter for OpenAI API token usage."""
+
+    def __init__(self, tokens_per_minute=150000):
+        """Initialize rate limiter with tokens per minute limit."""
+        self.tokens_per_minute = tokens_per_minute
+        self.tokens_used = 0
+        self.reset_time = time.time() + 60
+        self.lock = asyncio.Lock()
+        logger.info(f"Initialized OpenAI rate limiter with {tokens_per_minute} tokens per minute")
+
+    async def add_tokens(self, token_count):
+        """Track token usage and wait if necessary to avoid rate limits."""
+        async with self.lock:
+            current_time = time.time()
+
+            # Reset if minute has passed
+            if current_time > self.reset_time:
+                logger.debug(
+                    f"Rate limit window reset. Used {self.tokens_used} tokens in previous window"
+                )
+                self.tokens_used = 0
+                self.reset_time = current_time + 60
+
+            # Check if adding would exceed limit
+            if self.tokens_used + token_count > self.tokens_per_minute:
+                wait_time = self.reset_time - current_time
+                if wait_time > 0:
+                    logger.info(
+                        f"Rate limit approaching. Waiting {wait_time:.2f}s before processing"
+                    )
+                    await asyncio.sleep(wait_time)
+                # Reset counter after waiting
+                self.tokens_used = 0
+                self.reset_time = time.time() + 60
+
+            # Add tokens to counter
+            self.tokens_used += token_count
+            logger.debug(f"Added {token_count} tokens. Total in current window: {self.tokens_used}")
+            return self.tokens_used
+
+
+# Create global token rate limiter
+openai_rate_limiter = OpenAIRateLimiter(
+    tokens_per_minute=int(os.getenv("OPENAI_TOKENS_PER_MINUTE", "150000"))
+)
+
+# Global ChromaDB client to be initialized during startup
+chroma_client = None
 
 # Check if we're in mock mode (for testing without OpenAI API key)
 MOCK_EMBEDDINGS = os.getenv("MOCK_EMBEDDINGS", "false").lower() == "true"
@@ -81,6 +152,27 @@ app.add_middleware(
 app.add_middleware(LoggerMiddleware)
 
 
+# Startup and shutdown events
+@app.on_event("startup")
+async def startup_event():
+    """Initialize global resources on application startup."""
+    global chroma_client
+    logger.info("Initializing global resources on startup")
+    # Initialize the shared Chroma client
+    chroma_client = get_chroma_client()
+    logger.info("Application startup complete")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Clean up resources on application shutdown."""
+    logger.info("Shutting down application and cleaning up resources")
+    # Shutdown the thread pool
+    thread_pool.shutdown(wait=True)
+    logger.info("Thread pool shutdown complete")
+    # Add any other cleanup code here as needed
+
+
 def mock_embedding(text: str) -> List[float]:
     """Create a deterministic mock embedding based on the text content hash."""
     # Generate a deterministic hash of the text
@@ -99,6 +191,92 @@ def mock_embedding(text: str) -> List[float]:
         embedding = embedding / norm
 
     return embedding.tolist()
+
+
+# Helper function for exponential backoff retry
+async def generate_embedding_with_backoff(
+    text,
+    skip_rate_limiting=False,
+    max_retries=5,
+    initial_backoff=1,
+    is_indexing=False,
+    timeout=None,
+):
+    """Generate embedding with exponential backoff for rate limit handling."""
+    if MOCK_EMBEDDINGS:
+        return indexer_mock_embedding(text)
+
+    # Set default timeout based on operation type
+    if timeout is None:
+        timeout = DEFAULT_INDEX_TIMEOUT if is_indexing else DEFAULT_QUERY_TIMEOUT
+
+    # Calculate token count for rate limiting
+    token_count = len(enc.encode(text))
+
+    # Use both rate limiter and semaphore for concurrent OpenAI API calls
+    # Skip rate limiting if requested
+    if not skip_rate_limiting:
+        await openai_rate_limiter.add_tokens(token_count)
+    else:
+        logger.debug(f"Skipping rate limiting for {token_count} tokens")
+
+    # Choose appropriate semaphore based on operation type
+    semaphore = index_semaphore if is_indexing else query_semaphore
+
+    try:
+        # Use timeout for the entire embedding operation
+        async with asyncio.timeout(timeout):
+            async with semaphore:
+                logger.debug(
+                    f"{'Indexing' if is_indexing else 'Query'} embedding generation: acquired semaphore, {token_count} tokens"
+                )
+                retries = 0
+                backoff_time = initial_backoff
+
+                while retries <= max_retries:
+                    try:
+                        response = openai_client.embeddings.create(
+                            input=text, model="text-embedding-ada-002"
+                        )
+                        return response.data[0].embedding
+                    except Exception as e:
+                        error_str = str(e).lower()
+
+                        # Check if this is a rate limit error
+                        if (
+                            "rate limit" in error_str
+                            or "too many requests" in error_str
+                            or "429" in error_str
+                        ):
+                            retries += 1
+                            if retries > max_retries:
+                                logger.error(
+                                    f"Max retries reached for rate limit. Final error: {e!s}"
+                                )
+                                raise
+
+                            logger.info(
+                                f"Rate limit hit. Backing off for {backoff_time:.1f} seconds (retry {retries}/{max_retries})"
+                            )
+                            await asyncio.sleep(backoff_time)
+
+                            # Exponential backoff: double the wait time for next retry
+                            backoff_time *= 2
+                        else:
+                            # Not a rate limit error, re-raise
+                            logger.error(f"Error generating embedding: {e!s}")
+                            raise
+
+                # This should not be reached due to the raise in the loop
+                raise Exception("Failed to generate embedding after maximum retries")
+    except asyncio.TimeoutError:
+        logger.error(f"Embedding generation timed out after {timeout}s")
+        if MOCK_EMBEDDINGS:
+            return indexer_mock_embedding(text)
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail=f"Embedding generation timed out after {timeout}s",
+        ) from None
 
 
 # Add custom exception handler
@@ -127,48 +305,20 @@ def get_chroma_client():
             logger.info("Using in-memory Chroma client for testing")
             return chromadb.Client(Settings(anonymized_telemetry=False))
 
-        # Check if external Chroma server is specified
-        if CHROMA_HOST:
-            logger.info(f"Connecting to external Chroma at {CHROMA_HOST}:{CHROMA_PORT}")
-
-            # Use different client init based on whether we're using persistent mode
-            if USE_PERSISTENT_CHROMA:
-                logger.info("Using persistent HTTP client mode")
-                client = chromadb.HttpClient(
-                    host=CHROMA_HOST,
-                    port=int(CHROMA_PORT) if CHROMA_PORT else 8000,
-                    tenant="default_tenant",
-                    settings=Settings(
-                        anonymized_telemetry=False,
-                        allow_reset=True,
-                    ),
-                )
-            else:
-                # Standard HTTP client
-                client = chromadb.HttpClient(
-                    host=CHROMA_HOST,
-                    port=int(CHROMA_PORT) if CHROMA_PORT else 8000,
-                    tenant="default_tenant",
-                    settings=Settings(
-                        anonymized_telemetry=False,
-                    ),
-                )
-        else:
-            # Use local persistent Chroma
-            logger.info(f"Using local Chroma with persistence at {PERSIST_DIRECTORY}")
-            client = chromadb.PersistentClient(
-                path=PERSIST_DIRECTORY, settings=Settings(anonymized_telemetry=False)
-            )
+        # Due to version compatibility issues between client and server,
+        # we'll consistently use local persistence mode regardless of environment
+        logger.info(f"Using local Chroma with persistence at {PERSIST_DIRECTORY}")
+        client = chromadb.PersistentClient(
+            path=PERSIST_DIRECTORY, settings=Settings(anonymized_telemetry=False)
+        )
 
         # Test connection works
         heartbeat = client.heartbeat()
-        logger.info(f"Chroma connection successful. Heartbeat: {heartbeat}")
+        logger.info(f"Successfully connected to local Chroma database. Heartbeat: {heartbeat}")
         return client
     except Exception as e:
         logger.error(f"Failed to connect to Chroma: {e}")
-        logger.error(
-            f"Check if Chroma is running at {CHROMA_HOST or 'localhost'}:{CHROMA_PORT or '8000'}"
-        )
+        logger.error(f"Check if local storage at {PERSIST_DIRECTORY} is accessible")
         # Create an in-memory client for fallback
         logger.warning("Using in-memory Chroma as fallback (no persistence!)")
         return chromadb.Client(Settings(anonymized_telemetry=False))
@@ -177,8 +327,17 @@ def get_chroma_client():
 # Initialize Chroma collection
 def get_collection():
     """Get or create the collection for storing Ignition project data."""
+    global chroma_client
     try:
-        client = get_chroma_client()
+        # Use the globally initialized client
+        client = chroma_client
+
+        # If client is None (which shouldn't happen in normal operation),
+        # initialize a new client as fallback
+        if client is None:
+            logger.warning("Global Chroma client is None, creating a new client as fallback")
+            client = get_chroma_client()
+
         # Check if collection exists, create it if it doesn't
         try:
             collection = client.get_collection(COLLECTION_NAME)
@@ -260,6 +419,7 @@ async def root():
             "/query": "POST - Query the vector database",
             "/stats": "GET - Get statistics about the indexed data",
             "/agent/query": "POST - Agent-optimized query endpoint for Cursor integration",
+            "/agent/chat": "POST - Get conversational LLM responses enhanced with RAG context",
             "/health": "GET - Check API health status",
         },
     }
@@ -279,110 +439,117 @@ async def health_check(deps: None = Depends(verify_dependencies)):
     }
 
 
-@app.post("/query", summary="Query the vector database")
-async def query(request: QueryRequest):
-    """
-    Search for relevant context from Ignition project files.
-
-    This endpoint performs semantic search using the query text.
-    """
+@app.post("/query", response_model=QueryResponse)
+async def query(req: QueryRequest, deps: None = Depends(verify_dependencies)):
+    """Query the vector database for relevant Ignition project files."""
     try:
-        # Get collection (may be None if Chroma connection fails)
+        # Start timing
+        start_time = time.time()
+
+        # Get collection
         collection = get_collection()
-        if collection is None:
-            logger.error("Failed to connect to the vector database")
+        if collection is None or collection.count() == 0:
             raise HTTPException(
-                status_code=503,
-                detail="Vector database is not available. Please check Chroma connection.",
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No documents indexed. Please index the project first.",
             )
 
-        # Check if collection is empty
-        if collection.count() == 0:
-            logger.warning("Empty collection, no results will be returned")
-            return {
-                "results": [],
-                "metadata": {
-                    "total_chunks": 0,
-                    "query": request.query,
-                    "message": "The collection is empty. Please run the indexer to populate it.",
-                },
-            }
+        # Extract query parameters
+        query_text = req.query
+        top_k = req.top_k if req.top_k else 3
+        filter_metadata = req.filter_metadata if req.filter_metadata else {}
 
         # Generate embedding for the query
-        query_embedding = None
-        if MOCK_EMBEDDINGS or not openai_client:
-            logger.info("Using mock embedding for query")
-            query_embedding = mock_embedding(request.query)
+        use_mock = MOCK_EMBEDDINGS
+
+        # CPU-bound operation: tokenizing and calculating embeddings
+        # Run in thread pool to avoid blocking the event loop
+        if use_mock:
+            embedding = await asyncio.get_event_loop().run_in_executor(
+                thread_pool, mock_embedding, query_text
+            )
         else:
-            try:
-                # Use OpenAI API to generate embedding
-                embedding_response = openai_client.embeddings.create(
-                    input=request.query, model="text-embedding-ada-002"
-                )
-                query_embedding = embedding_response.data[0].embedding
-            except Exception as e:
-                logger.error(f"Error generating embedding: {e}")
-                # Fallback to mock embedding
-                logger.info("Falling back to mock embedding")
-                query_embedding = mock_embedding(request.query)
-
-        # Query the collection
-        results = collection.query(
-            query_embeddings=query_embedding,
-            n_results=request.top_k,
-            where=request.filter_metadata or None,
-            include=["metadatas", "documents", "distances"],
-        )
-
-        # Process and format results
-        processed_results = []
-        for i in range(len(results["ids"][0])):
-            metadata = results["metadatas"][0][i] if results["metadatas"] else {}
-            document = results["documents"][0][i] if results["documents"] else ""
-            distance = results["distances"][0][i] if results["distances"] else 0
-
-            # Convert distance to similarity score (cosine similarity)
-            similarity = 1.0 - distance if distance <= 2.0 else 0
-
-            # Add result
-            processed_results.append(
-                {
-                    "content": document,
-                    "metadata": metadata,
-                    "similarity": similarity,
-                    "id": results["ids"][0][i] if results["ids"] else None,
-                }
+            embedding = await generate_embedding_with_backoff(
+                query_text, is_indexing=False, timeout=DEFAULT_QUERY_TIMEOUT
             )
 
-        return {
-            "results": processed_results,
-            "metadata": {
-                "total_chunks": collection.count(),
-                "query": request.query,
-                "embedding_type": ("mock" if MOCK_EMBEDDINGS or not openai_client else "openai"),
-            },
-        }
+        # Query the collection with the embedding
+        logger.info(f"Querying for: '{query_text}' with top_k={top_k}")
+        try:
+            async with asyncio.timeout(DEFAULT_QUERY_TIMEOUT):
+                if filter_metadata:
+                    logger.info(f"Applying filter: {filter_metadata}")
+                    response = collection.query(
+                        query_embeddings=[embedding],
+                        n_results=top_k,
+                        where=filter_metadata,
+                    )
+                else:
+                    response = collection.query(
+                        query_embeddings=[embedding],
+                        n_results=top_k,
+                    )
+        except asyncio.TimeoutError:
+            logger.error(f"Query operation timed out after {DEFAULT_QUERY_TIMEOUT}s")
+            raise HTTPException(
+                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                detail=f"Query operation timed out after {DEFAULT_QUERY_TIMEOUT}s",
+            ) from None
 
+        # Process results
+        results = []
+        if response["distances"] and len(response["distances"][0]) > 0:
+            documents = response["documents"][0]
+            metadatas = response["metadatas"][0]
+            distances = response["distances"][0]
+
+            for _i, (doc, meta, dist) in enumerate(zip(documents, metadatas, distances)):
+                # Calculate similarity score (invert distance)
+                similarity = 1.0 - dist
+                # Format result
+                result = {
+                    "content": doc,
+                    "metadata": meta,
+                    "similarity": similarity,
+                    "source": meta.get("filepath", "Unknown source"),
+                }
+                results.append(result)
+
+        # Calculate query time
+        query_time = time.time() - start_time
+        logger.info(f"Query processed in {query_time:.2f} seconds")
+
+        # Return formatted results
+        return QueryResponse(
+            results=results,
+            total=len(results),
+            mock_used=use_mock,
+        )
+
+    except HTTPException:
+        # Re-raise HTTP exceptions to preserve status code
+        raise
     except Exception as e:
-        logger.error(f"Error in query endpoint: {e}")
-        logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        error_msg = f"Error processing query: {e!s}"
+        logger.error(error_msg, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=error_msg
+        ) from e
 
 
 # Agent-optimized query for Cursor integration
 class AgentQueryRequest(BaseModel):
-    query: str = Field(..., description="The natural language query to search for")
-    top_k: int = Field(5, description="Number of results to return", ge=1, le=20)
-    filter_type: Optional[str] = Field(
-        None, description="Filter results by document type (perspective or tag)"
-    )
-    context: Optional[Dict[str, Any]] = Field(
-        None,
-        description="Additional context for the agent (e.g., current file being edited)",
-    )
+    """Request model for the agent query endpoint."""
+
+    query: str = Field(..., description="Query string")
+    top_k: int = Field(5, description="Number of results to return")
+    filter_type: Optional[str] = Field(None, description="Optional filter for document type")
+    context: Optional[Dict[str, Any]] = Field(None, description="Optional context for the query")
     use_mock: Optional[bool] = Field(
-        None,
-        description="Use mock embeddings for testing (overrides environment variable)",
+        None, description="Whether to use mock embeddings (for testing)"
+    )
+    artificial_delay: Optional[float] = Field(
+        0, description="Artificial delay in seconds for testing concurrency"
     )
 
 
@@ -396,132 +563,155 @@ class AgentQueryResponse(BaseModel):
     mock_used: bool = Field(False, description="Whether mock embeddings were used")
 
 
+# Define chat request and response models for conversational responses
+class ChatRequest(BaseModel):
+    query: str = Field(..., description="The natural language query to search for")
+    top_k: int = Field(5, description="Number of results to return", ge=1, le=20)
+    filter_type: Optional[str] = Field(
+        None, description="Filter results by document type (perspective or tag)"
+    )
+    context: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Additional context for the agent (e.g., current file being edited)",
+    )
+    use_mock: Optional[bool] = Field(None, description="Override mock mode setting (for testing)")
+
+
+class ChatResponse(BaseModel):
+    response: str = Field(..., description="Conversational LLM response incorporating context")
+    context_chunks: List[Dict[str, Any]] = Field(
+        ..., description="Relevant context chunks used for the response"
+    )
+    mock_used: bool = Field(False, description="Whether mock embeddings were used")
+
+
 @app.post("/agent/query", response_model=AgentQueryResponse)
 async def agent_query(req: AgentQueryRequest, deps: None = Depends(verify_dependencies)):
     """Agent-optimized query endpoint for Cursor integration."""
-    start_time = time.time()
-    logger.info(f"Agent query received: '{req.query}', top_k={req.top_k}, context={req.context}")
-
-    # Check if mock mode is requested for this query
-    use_mock = MOCK_EMBEDDINGS
-    if req.use_mock is not None:
-        use_mock = req.use_mock
-        logger.info(f"Mock mode overridden to: {use_mock}")
-
     try:
-        # Get the collection
+        # Start timing
+        start_time = time.time()
+
+        # If artificial delay is specified, simulate a slow request
+        artificial_delay = req.artificial_delay or 0
+        if artificial_delay > 0:
+            logger.info(f"Adding artificial delay of {artificial_delay}s for request")
+            await asyncio.sleep(artificial_delay)
+
+        # Get collection
         collection = get_collection()
-        if collection is None:
+        if collection is None or collection.count() == 0:
             raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Vector database is not available. Please check Chroma connection.",
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No documents indexed. Please index the project first.",
             )
 
-        # Extract any filter from context
-        where_filter = {}
-        if req.filter_type:
-            where_filter["type"] = req.filter_type
+        # Extract query parameters
+        query_text = req.query
+        top_k = req.top_k if req.top_k else 5
+        filter_type = req.filter_type
+        context = req.context
 
-        # If context includes a file path, try to find related files
-        current_file = req.context.get("current_file") if req.context else None
-        if current_file:
-            # This is a simple heuristic - in a real implementation you might
-            # use more sophisticated matching based on file structure
-            file_base = os.path.basename(current_file)
-            if "." in file_base:
-                file_base = file_base.split(".")[0]
-                # Using simple equality instead of $contains
-                where_filter["filepath"] = file_base
+        # Generate embedding for the query
+        use_mock = MOCK_EMBEDDINGS
+        if req.use_mock is not None:
+            use_mock = req.use_mock
 
-        # Get embedding for the query
-        try:
-            embedding_start = time.time()
-
-            if use_mock:
-                # Use mock embedding if in mock mode
-                query_vector = mock_embedding(req.query)
-                logger.debug("Using mock embedding for query")
-            else:
-                # Use OpenAI API for real embedding
-                response = openai_client.embeddings.create(
-                    model="text-embedding-ada-002", input=[req.query]
-                )
-                query_vector = response.data[0].embedding
-
-            logger.debug(f"Generated embedding in {time.time() - embedding_start:.2f}s")
-        except Exception as e:
-            logger.error(f"Error generating embedding: {e}", exc_info=True)
-            if not use_mock:
-                logger.info("Falling back to mock embedding")
-                query_vector = mock_embedding(req.query)
-                use_mock = True
-            else:
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail=f"Error generating embedding: {e!s}",
-                ) from e
-
-        # Perform similarity search in Chroma
-        try:
-            query_start = time.time()
-            results = collection.query(
-                query_embeddings=[query_vector],
-                n_results=req.top_k,
-                where=where_filter if where_filter else None,
+        # Use thread pool for CPU-bound embedding generation
+        if use_mock:
+            embedding = await asyncio.get_event_loop().run_in_executor(
+                thread_pool, mock_embedding, query_text
             )
-            logger.debug(f"Chroma query completed in {time.time() - query_start:.2f}s")
-        except Exception as e:
-            logger.error(f"Error querying vector database: {e}", exc_info=True)
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Error querying vector database: {e!s}",
-            ) from e
+        else:
+            embedding = await generate_embedding_with_backoff(
+                query_text, is_indexing=False, timeout=DEFAULT_QUERY_TIMEOUT
+            )
 
-        # Format results for agent consumption
+        # Construct filter metadata based on filter_type
+        filter_metadata = {}
+        if filter_type:
+            filter_metadata["type"] = filter_type
+
+        # Apply additional filters based on context
+        if context and context.get("current_file"):
+            # If we have a current file context, we could boost files in the same directory
+            # or related components (this is a simple example, can be expanded)
+            logger.info(f"Query has current file context: {context['current_file']}")
+
+        # Query the collection with appropriate timeout
+        try:
+            async with asyncio.timeout(DEFAULT_QUERY_TIMEOUT):
+                if filter_metadata:
+                    logger.info(f"Applying filter: {filter_metadata}")
+                    response = collection.query(
+                        query_embeddings=[embedding],
+                        n_results=top_k,
+                        where=filter_metadata,
+                    )
+                else:
+                    response = collection.query(
+                        query_embeddings=[embedding],
+                        n_results=top_k,
+                    )
+        except asyncio.TimeoutError:
+            logger.error(f"Agent query operation timed out after {DEFAULT_QUERY_TIMEOUT}s")
+            raise HTTPException(
+                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                detail=f"Query operation timed out after {DEFAULT_QUERY_TIMEOUT}s",
+            ) from None
+
+        # Process results
         context_chunks = []
-        if results and "documents" in results and results["documents"]:
-            format_start = time.time()
-            for doc_text, meta, distance in zip(
-                results["documents"][0],
-                results["metadatas"][0],
-                results["distances"][0],
-            ):
-                # Format the chunk with its metadata for easy agent use
-                chunk_type = meta.get("type", "unknown")
-                source_info = f"{os.path.basename(meta.get('filepath', 'unknown'))}"
+        if response["distances"] and len(response["distances"][0]) > 0:
+            documents = response["documents"][0]
+            metadatas = response["metadatas"][0]
+            distances = response["distances"][0]
 
-                if chunk_type == "perspective":
-                    if "component" in meta:
-                        source_info += f" - Component: {meta['component']}"
-                elif chunk_type == "tag" and "folder" in meta:
-                    source_info += f" - Folder: {meta['folder']}"
+            for _i, (doc, meta, dist) in enumerate(zip(documents, metadatas, distances)):
+                # Calculate similarity score (invert distance)
+                similarity = 1.0 - dist
 
-                context_chunks.append(
-                    {
-                        "source": source_info,
-                        "content": doc_text,
-                        "metadata": meta,
-                        "similarity": distance,
-                    }
-                )
-            logger.debug(f"Formatted results in {time.time() - format_start:.2f}s")
+                # Format source path to be more readable
+                source_path = meta.get("filepath", "Unknown")
+                if source_path != "Unknown":
+                    source_path = os.path.basename(source_path)
 
-        # Create a suggested prompt that incorporates the context
-        suggested_prompt = None
-        if context_chunks:
-            prompt_start = time.time()
-            suggested_prompt = f"Query: {req.query}\n\nRelevant Ignition context:\n"
-            for i, chunk in enumerate(context_chunks, 1):
-                suggested_prompt += f"\n--- Context {i} ({chunk['source']}) ---\n"
-                suggested_prompt += f"{chunk['content']}\n"
+                # Format chunk
+                chunk = {
+                    "content": doc,
+                    "metadata": meta,
+                    "similarity": similarity,
+                    "source": source_path,
+                }
+                context_chunks.append(chunk)
 
-            suggested_prompt += "\nBased on the above context, please help with the query."
-            logger.debug(f"Generated prompt in {time.time() - prompt_start:.2f}s")
+        # Generate suggested prompt enhancement with retrieved context
+        # This is a CPU-bound operation, use thread pool
+        def generate_suggested_prompt():
+            prompt = f"Query: {query_text}\n\n"
+            if context_chunks:
+                prompt += "Relevant context from Ignition project:\n\n"
+                for _i, chunk in enumerate(context_chunks, 1):
+                    source = chunk["source"]
+                    content_preview = chunk["content"]
+                    if len(content_preview) > 200:
+                        content_preview = content_preview[:197] + "..."
+                    prompt += f"{_i}. From {source}: {content_preview}\n\n"
+            return prompt
 
+        suggested_prompt = await asyncio.get_event_loop().run_in_executor(
+            thread_pool, generate_suggested_prompt
+        )
+
+        # Measure response time
         response_time = time.time() - start_time
         logger.info(
             f"Agent query completed in {response_time:.2f}s, found {len(context_chunks)} chunks, mock_mode={use_mock}"
         )
+
+        # If there was an artificial delay, log it
+        if artificial_delay > 0:
+            logger.info(f"Query included artificial delay of {artificial_delay:.2f}s")
 
         return AgentQueryResponse(
             context_chunks=context_chunks,
@@ -534,6 +724,115 @@ async def agent_query(req: AgentQueryRequest, deps: None = Depends(verify_depend
         raise
     except Exception as e:
         error_msg = f"Error processing agent query: {e!s}"
+        logger.error(error_msg, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=error_msg
+        ) from e
+
+
+@app.post("/agent/chat", response_model=ChatResponse)
+async def agent_chat(req: ChatRequest, deps: None = Depends(verify_dependencies)):
+    """Generate a conversational LLM response enhanced with RAG context."""
+    start_time = time.time()
+    logger.info(f"Chat query received: '{req.query}', top_k={req.top_k}")
+
+    # Check if mock mode is requested for this query
+    use_mock = MOCK_EMBEDDINGS
+    if req.use_mock is not None:
+        use_mock = req.use_mock
+        logger.info(f"Mock mode overridden to: {use_mock}")
+
+    try:
+        # First, get relevant context chunks using the agent_query logic
+        agent_req = AgentQueryRequest(
+            query=req.query,
+            top_k=req.top_k,
+            filter_type=req.filter_type,
+            context=req.context,
+            use_mock=use_mock,
+        )
+
+        # Get the raw query results (re-using the agent_query logic)
+        query_results = await agent_query(agent_req)
+
+        # If we're using mock mode and no OpenAI API key, return a simple response
+        if use_mock and not openai_client:
+            mock_response = f"Here's what I found about '{req.query}':\n\n"
+            for _i, chunk in enumerate(query_results.context_chunks, 1):
+                mock_response += f"{_i}. From {chunk.get('source', 'unknown source')}: "
+                content = chunk.get("content", "").strip()
+                mock_response += f"{content[:100]}{'...' if len(content) > 100 else ''}\n\n"
+
+            mock_response += "This is a mock response since no OpenAI API key is available."
+
+            return ChatResponse(
+                response=mock_response,
+                context_chunks=query_results.context_chunks,
+                mock_used=True,
+            )
+
+        # Prepare a prompt for the LLM that includes the relevant context
+        context_prompt = "You are an assistant for Ignition SCADA systems. "
+        context_prompt += "Answer the following question using the provided context. "
+        context_prompt += "If the context doesn't provide enough information to answer fully, "
+        context_prompt += (
+            "acknowledge that and provide the best response based on what's available.\n\n"
+        )
+
+        # Add the context chunks
+        if query_results.context_chunks:
+            context_prompt += "Context information:\n"
+            for _i, chunk in enumerate(query_results.context_chunks, 1):
+                source = chunk.get("source", "Unknown source")
+                content = chunk.get("content", "").strip()
+                context_prompt += f"\n--- Context {_i}: {source} ---\n{content}\n"
+        else:
+            context_prompt += "No specific context found for this query.\n"
+
+        # Add the user's question
+        context_prompt += f"\nQuestion: {req.query}\n\nAnswer:"
+
+        # Call the OpenAI API to generate a conversational response
+        try:
+            chat_response = openai_client.chat.completions.create(
+                model="gpt-4-turbo",  # Using GPT-4 for a larger context window
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are a helpful assistant specializing in Ignition SCADA systems.",
+                    },
+                    {"role": "user", "content": context_prompt},
+                ],
+                temperature=0.7,
+                max_tokens=1000,
+            )
+
+            # Extract the response text
+            response_text = chat_response.choices[0].message.content.strip()
+        except Exception as e:
+            logger.error(f"Error generating chat response: {e}", exc_info=True)
+            response_text = f"I encountered an error when trying to generate a response: {e}"
+            if not use_mock:
+                response_text += "\n\nHere's the raw context I found:\n"
+                for _i, chunk in enumerate(query_results.context_chunks, 1):
+                    source = chunk.get("source", "Unknown")
+                    content = chunk.get("content", "")[:100]
+                    response_text += f"{_i}. From {source}: {content}...\n"
+
+        response_time = time.time() - start_time
+        logger.info(f"Chat response generated in {response_time:.2f}s")
+
+        return ChatResponse(
+            response=response_text,
+            context_chunks=query_results.context_chunks,
+            mock_used=use_mock,
+        )
+
+    except HTTPException:
+        # Re-raise HTTP exceptions to preserve status code
+        raise
+    except Exception as e:
+        error_msg = f"Error processing chat query: {e!s}"
         logger.error(error_msg, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=error_msg
@@ -568,22 +867,23 @@ async def get_stats():
         # Get some stats about document types if any documents exist
         type_stats = {}
         if count > 0:
-            # Limit query to avoid huge responses
             try:
-                sample = collection.get(limit=1000)
+                # Get all document types without limiting the results
+                # First get metadata only for efficiency
+                all_metadata = collection.get(include=["metadatas"])["metadatas"]
+
+                # Count documents by type
+                for meta in all_metadata:
+                    doc_type = meta.get("type", "unknown")
+                    if doc_type not in type_stats:
+                        type_stats[doc_type] = 0
+                    type_stats[doc_type] += 1
             except Exception as e:
-                logger.error(f"Error getting sample documents: {e}", exc_info=True)
+                logger.error(f"Error getting document types: {e}", exc_info=True)
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=f"Error getting sample documents: {e!s}",
+                    detail=f"Error getting document types: {e!s}",
                 ) from e
-
-            # Count documents by type
-            for meta in sample["metadatas"]:
-                doc_type = meta.get("type", "unknown")
-                if doc_type not in type_stats:
-                    type_stats[doc_type] = 0
-                type_stats[doc_type] += 1
 
         response_time = time.time() - start_time
         logger.info(f"Stats request completed in {response_time:.2f}s")
@@ -619,105 +919,105 @@ class IndexRequest(BaseModel):
     )
 
 
+# Create a semaphore for limiting concurrent indexing operations
+indexing_lock = asyncio.Lock()  # Only allow one indexing operation at a time
+
+
 @app.post("/index", summary="Index Ignition project files")
-async def index_project(request: IndexRequest):
-    """Index Ignition project files for semantic search."""
-    logger.info(f"Starting indexing of Ignition project at {request.project_path}")
+async def index_project(req: IndexRequest, deps: None = Depends(verify_dependencies)):
+    """Index Ignition project files."""
+    logger.info(f"Index request received for {req.project_path}")
 
-    # Initialize Chroma client
     try:
-        chroma_client = get_chroma_client()
-        logger.info("Initialized Chroma client")
-    except Exception as e:
-        logger.error(f"Failed to initialize Chroma client: {e!s}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to initialize Chroma client: {e!s}",
-        ) from e
-
-    # Get or create collection
-    collection_name = COLLECTION_NAME
-
-    # Delete collection if rebuild requested
-    if request.rebuild:
+        # Use timeout to avoid waiting too long if another indexing operation is in progress
         try:
-            chroma_client.delete_collection(collection_name)
-            logger.info(f"Deleted existing collection: {collection_name}")
-        except Exception as e:
-            logger.warning(f"Error deleting collection (may not exist): {e}")
-
-    try:
-        collection = chroma_client.get_or_create_collection(name=collection_name)
-        logger.info(f"Using collection: {collection_name}")
+            async with asyncio.timeout(5.0):
+                # Try to acquire the lock - only one indexing operation at a time
+                async with indexing_lock:
+                    logger.debug("Acquired indexing lock")
+                    return await _perform_indexing(req)
+        except asyncio.TimeoutError:
+            logger.warning("Indexing already in progress, cannot acquire lock")
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Another indexing operation is in progress. Please try again later.",
+            ) from None
+    except HTTPException:
+        # Re-raise HTTP exceptions to preserve status code
+        raise
     except Exception as e:
-        logger.error(f"Failed to create collection: {e!s}")
+        error_msg = f"Error during indexing: {e!s}"
+        logger.error(error_msg, exc_info=True)
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create collection: {e!s}",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=error_msg
         ) from e
 
-    # Path to the Ignition project
-    project_path = Path(request.project_path)
 
-    # Find JSON files in the Ignition project
-    json_files = []
-    for path in project_path.rglob("*.json"):
-        json_files.append(str(path))
+async def _perform_indexing(req: IndexRequest):
+    """Internal function to perform the actual indexing operation."""
+    global MOCK_EMBEDDINGS
 
-    logger.info(f"Found {len(json_files)} JSON files in the Ignition project")
-
-    # Process each file
-    doc_count = 0
-    chunk_count = 0
-    total_files = len(json_files)
+    # Set startup time
     start_time = time.time()
 
-    # Set limits for chunking
-    hard_token_limit = 7500
+    # Verify the path exists
+    project_path = os.path.expanduser(req.project_path)
+    if not os.path.exists(project_path):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Path {project_path} does not exist.",
+        )
 
-    # Helper function for exponential backoff retry
-    async def generate_embedding_with_backoff(text, max_retries=5, initial_backoff=1):
-        """Generate embedding with exponential backoff for rate limit handling."""
-        if MOCK_EMBEDDINGS:
-            return indexer_mock_embedding(text)
+    # Get collection
+    collection = get_collection()
+    if collection is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Could not connect to vector database",
+        )
 
-        retries = 0
-        backoff_time = initial_backoff
+    # Get parameters
+    rebuild = req.rebuild
+    skip_rate_limiting = req.skip_rate_limiting
 
-        while retries <= max_retries:
-            try:
-                response = openai_client.embeddings.create(
-                    input=text, model="text-embedding-ada-002"
-                )
-                return response.data[0].embedding
-            except Exception as e:
-                error_str = str(e).lower()
+    logger.info(
+        f"Starting indexing of project at {project_path} (rebuild={rebuild}, skip_rate_limiting={skip_rate_limiting})"
+    )
 
-                # Check if this is a rate limit error
-                if (
-                    "rate limit" in error_str
-                    or "too many requests" in error_str
-                    or "429" in error_str
-                ):
-                    retries += 1
-                    if retries > max_retries:
-                        logger.error(f"Max retries reached for rate limit. Final error: {e!s}")
-                        raise
+    # If rebuilding, delete existing collection and create a new one
+    if rebuild and collection.count() > 0:
+        logger.info(
+            f"Rebuilding index - deleting existing collection with {collection.count()} documents"
+        )
+        client = get_chroma_client()
+        client.delete_collection(COLLECTION_NAME)
+        collection = client.create_collection(COLLECTION_NAME)
+        logger.info("Created new empty collection")
 
-                    logger.info(
-                        f"Rate limit hit. Backing off for {backoff_time:.1f} seconds (retry {retries}/{max_retries})"
-                    )
-                    await asyncio.sleep(backoff_time)
+    # Path to the Ignition project
+    project_path = Path(req.project_path)
+    if not project_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Project directory not found: {project_path}",
+        )
 
-                    # Exponential backoff: double the wait time for next retry
-                    backoff_time *= 2
-                else:
-                    # Not a rate limit error, re-raise
-                    logger.error(f"Error generating embedding: {e!s}")
-                    raise
+    # Find all JSON files in the project directory
+    json_files = []
+    for root, _, files in os.walk(project_path):
+        for fname in files:
+            if fname.endswith(".json"):
+                json_files.append(os.path.join(root, fname))
 
-        # This should not be reached due to the raise in the loop
-        raise Exception("Failed to generate embedding after maximum retries")
+    logger.info(f"Found {len(json_files)} JSON files to index")
+
+    # Process each file
+    total_files = len(json_files)
+    doc_count = 0
+    chunk_count = 0
+
+    # Track token usage for rate limiting
+    hard_token_limit = 7500  # Hard limit for safety
 
     # Helper function for character chunking (copied from main.py)
     def chunk_by_characters(text, max_chunk_size):
@@ -793,7 +1093,12 @@ async def index_project(request: IndexRequest):
             if token_count <= 3000:
                 try:
                     # Generate embedding with backoff for rate limiting
-                    embedding = await generate_embedding_with_backoff(content)
+                    embedding = await generate_embedding_with_backoff(
+                        content,
+                        skip_rate_limiting=skip_rate_limiting,
+                        is_indexing=True,
+                        timeout=DEFAULT_INDEX_TIMEOUT,
+                    )
 
                     # Add to collection
                     file_path_replaced = file_path.replace("/", "_").replace("\\", "_")
@@ -874,14 +1179,7 @@ async def index_project(request: IndexRequest):
                                         array_str = json.dumps(current_array)
                                         sub_chunks.append(array_str)
 
-                                    chunks = [(chunk, metadata) for chunk in sub_chunks]
-                                else:
-                                    # For other JSON structures, fall back to character-level chunking
-                                    text_chunks = chunk_by_characters(
-                                        content,
-                                        int(hard_token_limit / 1.2),
-                                    )
-                                    chunks = [(chunk, metadata) for chunk in text_chunks]
+                                chunks = [(chunk, metadata) for chunk in sub_chunks]
                             except json.JSONDecodeError:
                                 # If JSON parsing fails, use character-level chunking
                                 text_chunks = chunk_by_characters(
@@ -903,14 +1201,19 @@ async def index_project(request: IndexRequest):
                         chunks = create_chunks([doc])
 
                     # Process chunks
-                    for i, (chunk_text, chunk_metadata) in enumerate(chunks):
+                    for _i, (chunk_text, chunk_metadata) in enumerate(chunks):
                         try:
                             # Generate embedding with backoff
-                            embedding = await generate_embedding_with_backoff(chunk_text)
+                            embedding = await generate_embedding_with_backoff(
+                                chunk_text,
+                                skip_rate_limiting=skip_rate_limiting,
+                                is_indexing=True,
+                                timeout=DEFAULT_INDEX_TIMEOUT,
+                            )
 
                             # Create a unique ID for this chunk
                             file_path_replaced = file_path.replace("/", "_").replace("\\", "_")
-                            chunk_id = f"{file_path_replaced}_chunk_{i}"
+                            chunk_id = f"{file_path_replaced}_chunk_{_i}"
 
                             # Add to collection
                             collection.add(
@@ -922,11 +1225,10 @@ async def index_project(request: IndexRequest):
 
                             chunk_count += 1
                         except Exception as e:
-                            logger.error(f"Error processing chunk {i} of {file_path}: {e!s}")
+                            logger.error(f"Error processing chunk {_i} of {file_path}: {e!s}")
 
                     doc_count += 1
                     logger.info(f"Indexed {file_path} into {len(chunks)} chunks")
-
                 except Exception as e:
                     logger.error(f"Error chunking {file_path}: {e!s}")
 
@@ -955,6 +1257,83 @@ async def index_project(request: IndexRequest):
     logger.info(f"Indexed {doc_count}/{total_files} files into {chunk_count} chunks")
 
     return result
+
+
+class DelayTestRequest(BaseModel):
+    """Request model for the delay test endpoint."""
+
+    delay_seconds: float = Field(1.0, description="Seconds to delay before responding")
+    identifier: str = Field("test", description="Identifier for this request")
+
+
+class DelayTestResponse(BaseModel):
+    """Response model for the delay test endpoint."""
+
+    identifier: str = Field(..., description="Echo of the request identifier")
+    delay_seconds: float = Field(..., description="Actual delay applied")
+    timestamp: float = Field(..., description="Server timestamp")
+
+
+@app.post("/test/delay", response_model=DelayTestResponse)
+async def test_delay(req: DelayTestRequest):
+    """Test endpoint that delays for the specified time before responding.
+
+    Used to test concurrency handling in the API.
+    """
+    start_time = time.time()
+
+    # Log the request
+    logger.info(f"Delay test request received: {req.identifier}, delay={req.delay_seconds}s")
+
+    # Apply the delay
+    await asyncio.sleep(req.delay_seconds)
+
+    # Calculate actual delay
+    actual_delay = time.time() - start_time
+
+    # Log completion
+    logger.info(f"Delay test completed: {req.identifier}, actual_delay={actual_delay:.2f}s")
+
+    # Return response
+    return DelayTestResponse(
+        identifier=req.identifier, delay_seconds=actual_delay, timestamp=time.time()
+    )
+
+
+@app.post("/reset", summary="Reset the Chroma collection")
+async def reset_collection():
+    """Reset the entire Chroma collection, removing all indexed documents.
+    This is a destructive operation and cannot be undone."""
+    logger.warning("Received request to reset Chroma collection")
+
+    try:
+        # Get the Chroma client
+        client = get_chroma_client()
+
+        # Delete the collection if it exists
+        try:
+            client.delete_collection(COLLECTION_NAME)
+            logger.info(f"Successfully deleted collection '{COLLECTION_NAME}'")
+        except Exception as e:
+            logger.warning(f"Error deleting collection: {e}")
+            # Continue anyway - it might not exist
+
+        # Create a new empty collection
+        collection = client.create_collection(COLLECTION_NAME)
+        logger.info(f"Created new empty collection '{COLLECTION_NAME}'")
+
+        return {
+            "status": "success",
+            "message": f"Collection '{COLLECTION_NAME}' has been reset",
+            "document_count": collection.count(),
+        }
+
+    except Exception as e:
+        error_msg = f"Error resetting collection: {e!s}"
+        logger.error(error_msg, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=error_msg
+        ) from e
 
 
 if __name__ == "__main__":
