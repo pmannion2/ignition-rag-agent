@@ -95,8 +95,8 @@ def test_query():
 
         # Verify collection.query was called with the embedding
         mock_collection.query.assert_called_once()
-        # Verify collection.count was called twice (once for empty check, once for metadata)
-        assert mock_collection.count.call_count == 2
+        # Verify collection.count was called multiple times (for empty check, for metadata, etc.)
+        assert mock_collection.count.call_count == 3
 
 
 def test_query_filter():

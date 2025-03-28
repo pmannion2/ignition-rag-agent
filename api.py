@@ -377,6 +377,10 @@ class Chunk(BaseModel):
 class QueryResponse(BaseModel):
     results: List[Chunk] = Field(..., description="List of matching chunks")
     total: int = Field(..., description="Total number of results found")
+    metadata: Dict[str, Any] = Field(
+        default_factory=lambda: {"total_chunks": 0},
+        description="Additional metadata about the query",
+    )
     mock_used: bool = Field(False, description="Whether mock embeddings were used")
 
 
@@ -519,10 +523,15 @@ async def query(req: QueryRequest, deps: None = Depends(verify_dependencies)):
         query_time = time.time() - start_time
         logger.info(f"Query processed in {query_time:.2f} seconds")
 
+        # Get total document count for metadata
+        total_chunks = collection.count()
+        metadata = {"total_chunks": total_chunks}
+
         # Return formatted results
         return QueryResponse(
             results=results,
             total=len(results),
+            metadata=metadata,
             mock_used=use_mock,
         )
 

@@ -904,29 +904,23 @@ def generate_embeddings(texts: List[str], batch_size: int = 20) -> List[List[flo
 
 
 def index_documents(chunks: List[tuple], collection, rebuild: bool = False):
-    """Index the chunks in the Chroma collection."""
+    """Index document chunks in ChromaDB."""
+    # Check if there are any chunks to process
+    if not chunks:
+        print("No chunks to index.")
+        return
+
+    # Prepare data for indexing
     texts = [chunk[0] for chunk in chunks]
     metadatas = [chunk[1] for chunk in chunks]
+    ids = [f"{os.path.basename(meta['filepath'])}_{i}" for i, meta in enumerate(metadatas)]
 
-    # Generate embeddings for all chunks
+    # Generate embeddings
     print(f"Generating embeddings for {len(texts)} chunks...")
     embeddings = generate_embeddings(texts)
 
-    # Create unique IDs for each chunk
-    ids = []
-    for idx, meta in enumerate(metadatas):
-        # Create a unique ID based on filepath and chunk index
-        file_id = os.path.basename(meta["filepath"])
-        chunk_id = f"{file_id}-chunk{idx}"
-        ids.append(chunk_id)
-
-    # Add all embeddings, documents, and metadata to Chroma collection
-    print("Adding chunks to vector database...")
-
-    # If rebuilding, we already created a new collection earlier
-    # Otherwise, we need to handle updates differently
+    # Handle re-indexing logic
     if not rebuild:
-        # Get existing IDs to determine what to delete
         existing_ids = collection.get()["ids"] if collection.count() > 0 else []
 
         # Find IDs that belong to files we're re-indexing
